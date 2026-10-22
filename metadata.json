@@ -1,0 +1,7 @@
+{
+  "name": "Smart Attendance Management System Using QR Code",
+  "description": "A smart, secure QR code-based student attendance tracking platform for colleges and universities with role-based access, time-limited session tokens, and instant verification.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

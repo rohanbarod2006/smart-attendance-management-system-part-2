@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Attendance Management System Using QR Code</title>
+    <meta name="description" content="A smart, secure QR code-based student attendance tracking platform for colleges and universities with role-based access, time-limited session tokens, and instant verification." />
+    <meta property="og:title" content="Smart Attendance Management System Using QR Code" />
+    <meta property="og:description" content="A smart, secure QR code-based student attendance tracking platform for colleges and universities with role-based access, time-limited session tokens, and instant verification." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+      // Ignore Vite HMR WebSocket errors when HMR is disabled in cloud sandboxes
+      window.addEventListener('error', function(e) {
+        if (e.message && (e.message.includes('WebSocket') || e.message.includes('vite') || e.filename?.includes('@vite/client'))) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function(e) {
+        const reason = e.reason?.message || String(e.reason);
+        if (reason && (reason.includes('WebSocket') || reason.includes('vite') || reason.includes('createWebSocketModuleRunnerTransport'))) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      }, true);
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 font-sans antialiased min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
