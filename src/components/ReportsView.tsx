@@ -89,12 +89,22 @@ export const ReportsView: React.FC = () => {
       classId: selectedClassId ? Number(selectedClassId) : undefined,
       subjectId: selectedSubjectId ? Number(selectedSubjectId) : undefined,
     });
-    window.location.href = url;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `attendance_report_${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleExportSingleSessionCsv = (sessionId: number) => {
     const url = api.getExportCsvUrl({ sessionId });
-    window.location.href = url;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `attendance_session_${sessionId}_${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   // Filter subjects for the selected class

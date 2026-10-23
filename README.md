@@ -12,12 +12,11 @@ A production-grade, secure, browser-based student attendance tracking platform d
 ---
 
 ## 🛠️ Technology Stack
-- **Frontend:** React 19, TypeScript, Tailwind CSS, Lucide Icons, `html5-qrcode` (WebRTC camera scanner), `canvas-confetti`
-- **Backend:**
-  - **Live Web App (Node/Express):** `server.ts` with SQLite (`sql.js`), JWT auth, `qrcode` generation, and Vite middleware on port 3000.
-  - **Python Flask Backend:** Located in `/backend` folder (`app.py`, `models.py`, `init_db.py`, `requirements.txt`).
-- **Database:** SQLite 3 (`attendance.db`) with 6 normalized relational tables and foreign keys.
-- **Security:** SHA-256 token hashing, JWT Bearer tokens, Bcrypt/PBKDF2 password hashing, unique composite constraints to prevent duplicate attendance.
+- **Architecture:** Pure Client-Side Single Page Application (React 19, TypeScript, Vite)
+- **Styling:** Tailwind CSS, Lucide Icons
+- **QR Engine:** Browser-based `qrcode` generation & `html5-qrcode` camera WebRTC decoding
+- **Storage & State:** Persistent Client-Side Relational Store in `localStorage`
+- **Security:** Browser Native SubtleCrypto (SHA-256) session token hashing, time-limited tokens, duplicate prevention checks
 
 ---
 
