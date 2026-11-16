@@ -174,40 +174,8 @@ service cloud.firestore {
         && data.updatedAt.size() <= 40;
     }
 
-    function isValidSession(data) {
-      return data.keys().hasAll([
-          'teacherUid',
-          'teacherName',
-          'classId',
-          'className',
-          'subjectName',
-          'subjectCode',
-          'department',
-          'tokenHash',
-          'startTime',
-          'expiryTime',
-          'expiryTimestamp',
-          'durationMinutes',
-          'status',
-          'createdAt'
-        ])
-        && data.keys().hasOnly([
-          'teacherUid',
-          'teacherName',
-          'classId',
-          'className',
-          'subjectName',
-          'subjectCode',
-          'department',
-          'tokenHash',
-          'startTime',
-          'expiryTime',
-          'expiryTimestamp',
-          'durationMinutes',
-          'status',
-          'createdAt'
-        ])
-        && data.teacherUid is string
+    function isValidSessionBase(data) {
+      return data.teacherUid is string
         && data.teacherUid == request.auth.uid
         && data.teacherName is string
         && data.teacherName.size() >= 1
@@ -225,8 +193,6 @@ service cloud.firestore {
         && data.department is string
         && data.department.size() >= 1
         && data.department.size() <= 120
-        && data.tokenHash is string
-        && data.tokenHash.size() == 64
         && data.startTime is string
         && data.startTime.size() >= 10
         && data.startTime.size() <= 40
@@ -237,7 +203,93 @@ service cloud.firestore {
         && data.durationMinutes is number
         && data.durationMinutes >= 1
         && data.durationMinutes <= 180
-        && data.status == 'ACTIVE'
+        && data.createdAt is string
+        && data.createdAt.size() >= 10
+        && data.createdAt.size() <= 40;
+    }
+
+    function isValidNewSession(data) {
+      return data.keys().hasAll([
+          'teacherUid',
+          'teacherName',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'startTime',
+          'expiryTime',
+          'expiryTimestamp',
+          'durationMinutes',
+          'status',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'teacherUid',
+          'teacherName',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'startTime',
+          'expiryTime',
+          'expiryTimestamp',
+          'durationMinutes',
+          'status',
+          'createdAt'
+        ])
+        && isValidSessionBase(data)
+        && data.status == 'ACTIVE';
+    }
+
+    function isValidSessionUpdate(data) {
+      return data.keys().hasAll([
+          'teacherUid',
+          'teacherName',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'startTime',
+          'expiryTime',
+          'expiryTimestamp',
+          'durationMinutes',
+          'status',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'teacherUid',
+          'teacherName',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'tokenHash',
+          'startTime',
+          'expiryTime',
+          'expiryTimestamp',
+          'durationMinutes',
+          'status',
+          'createdAt'
+        ])
+        && isValidSessionBase(data)
+        && data.status in ['ACTIVE', 'CLOSED', 'EXPIRED']
+        && (!('tokenHash' in data) || (data.tokenHash is string && data.tokenHash.size() == 64));
+    }
+
+    function isValidSessionSecret(data, sessionId) {
+      return data.keys().hasAll(['sessionId', 'teacherUid', 'tokenHash', 'createdAt'])
+        && data.keys().hasOnly(['sessionId', 'teacherUid', 'tokenHash', 'createdAt'])
+        && data.sessionId is string
+        && data.sessionId == sessionId
+        && data.teacherUid is string
+        && data.teacherUid == request.auth.uid
+        && data.tokenHash is string
+        && data.tokenHash.size() == 64
+        && data.tokenHash.matches('^[a-f0-9]{64}$')
         && data.createdAt is string
         && data.createdAt.size() >= 10
         && data.createdAt.size() <= 40;
@@ -255,8 +307,9 @@ service cloud.firestore {
           'studentUid',
           'studentName',
           'studentEmail',
-          'tokenHash',
+          'qrToken',
           'markedAt',
+          'markedAtTimestamp',
           'status'
         ])
         && data.keys().hasOnly([
@@ -271,8 +324,9 @@ service cloud.firestore {
           'studentName',
           'studentEmail',
           'rollNumber',
-          'tokenHash',
+          'qrToken',
           'markedAt',
+          'markedAtTimestamp',
           'status'
         ])
         && isValidId(data.sessionId)
@@ -297,12 +351,28 @@ service cloud.firestore {
         && data.studentName.size() <= 120
         && matchesAuthEmail(data.studentEmail)
         && (!('rollNumber' in data) || data.rollNumber == null || (data.rollNumber is string && data.rollNumber.size() <= 50))
-        && data.tokenHash is string
-        && data.tokenHash.size() == 64
+        && data.qrToken is string
+        && data.qrToken.size() >= 16
+        && data.qrToken.size() <= 128
         && data.markedAt is string
         && data.markedAt.size() >= 10
         && data.markedAt.size() <= 40
+        && data.markedAtTimestamp == request.time
         && data.status == 'PRESENT';
+    }
+
+    function verifyAttendanceSessionAndToken(data) {
+      let sessionDoc = get(/databases/$(database)/documents/sessions/$(data.sessionId));
+      let secretDoc = get(/databases/$(database)/documents/sessionSecrets/$(data.sessionId));
+      return sessionDoc.data.status == 'ACTIVE'
+        && request.time <= sessionDoc.data.expiryTimestamp
+        && hashing.sha256(data.qrToken.toUtf8()).toHexString().lower() == secretDoc.data.tokenHash
+        && data.teacherUid == sessionDoc.data.teacherUid
+        && data.classId == sessionDoc.data.classId
+        && data.className == sessionDoc.data.className
+        && data.subjectName == sessionDoc.data.subjectName
+        && data.subjectCode == sessionDoc.data.subjectCode
+        && data.teacherName == sessionDoc.data.teacherName;
     }
 
     match /users/{userId} {
@@ -396,8 +466,7 @@ service cloud.firestore {
     }
 
     match /sessions/{sessionId} {
-      // Teachers manage only their own sessions; students may read session metadata
-      // (plain QR tokens are never stored, only SHA-256 tokenHash).
+      // Public session metadata only — tokenHash is stored separately in sessionSecrets.
       allow get: if isValidId(sessionId) && isSignedIn();
       allow list: if isSignedIn() && (
         (isTeacher() && existing().teacherUid == request.auth.uid) ||
@@ -406,18 +475,43 @@ service cloud.firestore {
 
       allow create: if isValidId(sessionId)
         && isTeacher()
-        && isValidSession(incoming())
-        && incoming().teacherUid == request.auth.uid;
+        && isValidNewSession(incoming())
+        && incoming().teacherUid == request.auth.uid
+        && existsAfter(/databases/$(database)/documents/sessionSecrets/$(sessionId))
+        && getAfter(/databases/$(database)/documents/sessionSecrets/$(sessionId)).data.teacherUid == request.auth.uid;
 
       allow update: if isValidId(sessionId)
         && isTeacher()
         && existing().teacherUid == request.auth.uid
+        && isValidSessionUpdate(incoming())
         && incoming().teacherUid == existing().teacherUid
         && incoming().classId == existing().classId
-        && incoming().tokenHash == existing().tokenHash
+        && incoming().startTime == existing().startTime
+        && incoming().expiryTime == existing().expiryTime
+        && incoming().expiryTimestamp == existing().expiryTimestamp
+        && incoming().durationMinutes == existing().durationMinutes
         && incoming().createdAt == existing().createdAt
-        && incoming().diff(existing()).affectedKeys().hasOnly(['status'])
-        && incoming().status in ['ACTIVE', 'CLOSED', 'EXPIRED'];
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+
+      allow delete: if isValidId(sessionId)
+        && isTeacher()
+        && existing().teacherUid == request.auth.uid;
+    }
+
+    match /sessionSecrets/{sessionId} {
+      // Strictly unreadable by students; stores SHA-256 tokenHash for server-side rule verification.
+      allow get: if isValidId(sessionId)
+        && isTeacher()
+        && existing().teacherUid == request.auth.uid;
+      allow list: if false;
+
+      allow create: if isValidId(sessionId)
+        && isTeacher()
+        && isValidSessionSecret(incoming(), sessionId)
+        && existsAfter(/databases/$(database)/documents/sessions/$(sessionId))
+        && getAfter(/databases/$(database)/documents/sessions/$(sessionId)).data.teacherUid == request.auth.uid;
+
+      allow update: if false;
 
       allow delete: if isValidId(sessionId)
         && isTeacher()
@@ -425,27 +519,31 @@ service cloud.firestore {
     }
 
     match /attendance/{recordId} {
-      // Students can read only their own attendance; teachers can read attendance for their sessions.
+      // Students can read only their own attendance (and safely check non-existence of their own deterministic ID);
+      // teachers can read attendance for their sessions.
       allow get: if isValidId(recordId)
         && isSignedIn()
-        && (existing().studentUid == request.auth.uid || existing().teacherUid == request.auth.uid);
+        && (
+          (resource == null
+            && recordId.size() > request.auth.uid.size() + 1
+            && recordId[recordId.size() - request.auth.uid.size() - 1 : recordId.size()] == ('_' + request.auth.uid))
+          || (resource != null && (existing().studentUid == request.auth.uid || existing().teacherUid == request.auth.uid))
+        );
 
       allow list: if isSignedIn()
         && (existing().studentUid == request.auth.uid || existing().teacherUid == request.auth.uid);
 
       // Deterministic document ID (${sessionId}_${studentUid}) prevents duplicate scans.
-      // Rules verify active status, server-side expiry timestamp, and SHA-256 tokenHash match.
+      // Rules verify student role, active status, server-side expiry timestamp, server timestamp,
+      // and server-side SHA-256 hash of qrToken against the student-unreadable sessionSecrets doc.
       allow create: if isValidId(recordId)
         && isStudent()
         && recordId == (incoming().sessionId + '_' + request.auth.uid)
         && incoming().studentUid == request.auth.uid
         && isValidAttendanceRecord(incoming())
         && exists(/databases/$(database)/documents/sessions/$(incoming().sessionId))
-        && get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.status == 'ACTIVE'
-        && request.time <= get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.expiryTimestamp
-        && incoming().tokenHash == get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.tokenHash
-        && incoming().teacherUid == get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.teacherUid
-        && incoming().classId == get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.classId;
+        && exists(/databases/$(database)/documents/sessionSecrets/$(incoming().sessionId))
+        && verifyAttendanceSessionAndToken(incoming());
 
       allow update, delete: if false;
     }

@@ -6,10 +6,13 @@ import {
   updateTeacherClass,
   type CreateTeacherClassPayload,
 } from '../services/classService.ts';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../lib/firebase.ts';
 import {
   closeAttendanceSession,
-  fetchSessionLiveDetails,
   fetchTeacherDashboardData,
+  mapAttendanceDoc,
+  mapSessionDoc,
 } from '../services/attendanceService.ts';
 import {
   SessionLiveDetails,
@@ -105,38 +108,91 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     loadDashboard();
   }, [loadDashboard]);
 
-  // Poll active session attendees every 3 seconds for real-time live attendance
+  // Real-time active session monitor via Firestore onSnapshot + 1s countdown tick
   useEffect(() => {
-    if (!selectedActiveSessionId || !teacherUid) {
+    if (!selectedActiveSessionId || !teacherUid || !db) {
       setActiveSessionLiveData(null);
       return;
     }
 
-    const pollLiveSession = async () => {
-      try {
-        const live = await fetchSessionLiveDetails(selectedActiveSessionId, teacherUid);
-        setActiveSessionLiveData(live);
+    let latestSession: ReturnType<typeof mapSessionDoc> | null = null;
+    let latestRecords: ReturnType<typeof mapAttendanceDoc>[] = [];
+    let expiredTriggered = false;
 
-        const expiry = new Date(live.session.expiryTime).getTime();
-        const now = Date.now();
-        const diff = Math.max(0, Math.floor((expiry - now) / 1000));
+    const updateCountdown = (session: ReturnType<typeof mapSessionDoc>) => {
+      const expiry = new Date(session.expiryTime).getTime();
+      const diff = Math.max(0, Math.floor((expiry - Date.now()) / 1000));
 
-        if (diff === 0 || live.session.status !== 'ACTIVE') {
-          setTimeRemaining('Expired');
+      if (diff === 0 || session.status !== 'ACTIVE') {
+        setTimeRemaining('Expired');
+        if (!expiredTriggered) {
+          expiredTriggered = true;
           loadDashboard();
-        } else {
-          const mins = Math.floor(diff / 60);
-          const secs = diff % 60;
-          setTimeRemaining(`${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`);
         }
-      } catch (err) {
-        console.warn('Failed to poll live session:', err);
+      } else {
+        const mins = Math.floor(diff / 60);
+        const secs = diff % 60;
+        setTimeRemaining(`${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`);
       }
     };
 
-    pollLiveSession();
-    const interval = setInterval(pollLiveSession, 3000);
-    return () => clearInterval(interval);
+    const syncLiveState = () => {
+      if (!latestSession) return;
+      setActiveSessionLiveData({
+        session: latestSession,
+        records: latestRecords,
+        presentCount: latestRecords.length,
+      });
+      updateCountdown(latestSession);
+    };
+
+    const unsubSession = onSnapshot(
+      doc(db, 'sessions', selectedActiveSessionId),
+      (snap) => {
+        if (!snap.exists()) {
+          setActiveSessionLiveData(null);
+          if (!expiredTriggered) {
+            expiredTriggered = true;
+            loadDashboard();
+          }
+          return;
+        }
+        latestSession = mapSessionDoc(snap.id, snap.data(), latestRecords.length);
+        syncLiveState();
+      },
+      (err) => {
+        console.warn('Live session listener error:', err);
+      }
+    );
+
+    const unsubAttendance = onSnapshot(
+      query(collection(db, 'attendance'), where('teacherUid', '==', teacherUid)),
+      (snap) => {
+        latestRecords = snap.docs
+          .map((d) => mapAttendanceDoc(d.id, d.data()))
+          .filter((r) => r.sessionId === selectedActiveSessionId)
+          .sort((a, b) => new Date(b.markedAt).getTime() - new Date(a.markedAt).getTime());
+        if (latestSession) {
+          latestSession = { ...latestSession, presentCount: latestRecords.length };
+        }
+        syncLiveState();
+      },
+      (err) => {
+        console.warn('Live attendance listener error:', err);
+      }
+    );
+
+    const countdownInterval = setInterval(() => {
+      if (latestSession) {
+        updateCountdown(latestSession);
+      }
+    }, 1000);
+
+    return () => {
+      unsubSession();
+      unsubAttendance();
+      clearInterval(countdownInterval);
+    };
   }, [selectedActiveSessionId, teacherUid, loadDashboard]);
 
   const handleCloseSession = async (sessionId: string) => {
@@ -411,7 +467,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <div className="mt-4">
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs font-bold text-slate-800">
-                  Live Attendance Feed (Auto-updates every 3 seconds)
+                  Live Attendance Feed (Real-time Firestore updates)
                 </h3>
                 <span className="text-[11px] text-slate-500">
                   {activeSessionLiveData.records.length} students recorded

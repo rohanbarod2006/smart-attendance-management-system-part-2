@@ -33,20 +33,28 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   > | null>(null);
 
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const scanLockedRef = useRef<boolean>(false);
+  const submittingRef = useRef<boolean>(false);
   const readerElementId = 'qr-camera-stream-container';
 
   // If initial URL parameters were passed (e.g. from a link or scan)
   useEffect(() => {
-    if (initialSessionId && initialToken) {
-      setManualSessionId(initialSessionId);
-      setManualToken(initialToken);
-      setMode('manual');
+    if (isOpen) {
+      scanLockedRef.current = false;
+      setErrorMessage(null);
+      if (initialSessionId && initialToken) {
+        setManualSessionId(initialSessionId);
+        setManualToken(initialToken);
+        setSuccessData(null);
+        setMode('manual');
+      }
     }
-  }, [initialSessionId, initialToken]);
+  }, [isOpen, initialSessionId, initialToken]);
 
   // Handle camera start/stop
   useEffect(() => {
     if (isOpen && mode === 'camera' && !successData) {
+      scanLockedRef.current = false;
       startCamera();
     } else {
       stopCamera();
@@ -124,13 +132,20 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       // Not JSON, continue to URL checks
     }
 
-    // 2. Check if URL with query parameters (e.g. #scan?sessionId=abc&token=xyz)
+    // 2. Check if URL with search or hash query parameters (e.g. #scan?sessionId=abc&token=xyz)
     try {
       const url = new URL(trimmed.startsWith('http') ? trimmed : `http://dummy.com/${trimmed}`);
+      const searchParams = new URLSearchParams(url.search);
       const hashQuery = url.hash.includes('?') ? url.hash.split('?')[1] : '';
-      const searchParams = new URLSearchParams(url.search || hashQuery);
-      const sessionId = searchParams.get('sessionId') || searchParams.get('session');
-      const token = searchParams.get('token');
+      const hashParams = new URLSearchParams(hashQuery);
+
+      const sessionId =
+        searchParams.get('sessionId') ||
+        searchParams.get('session') ||
+        hashParams.get('sessionId') ||
+        hashParams.get('session');
+      const token = searchParams.get('token') || hashParams.get('token');
+
       if (sessionId && token) {
         return { sessionId: sessionId.trim(), token: token.trim() };
       }
@@ -150,14 +165,20 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   };
 
   const handleScannedContent = async (decodedText: string) => {
+    if (scanLockedRef.current || submittingRef.current) {
+      return;
+    }
+    scanLockedRef.current = true;
+
     await stopCamera();
     const parsed = parseQRContent(decodedText);
     if (!parsed) {
+      scanLockedRef.current = false;
       setErrorMessage('Unrecognized QR format. Ensure you are scanning an active attendance QR code.');
       return;
     }
 
-    submitAttendance(parsed.sessionId, parsed.token);
+    await submitAttendance(parsed.sessionId, parsed.token);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -179,10 +200,12 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         return;
       }
 
-      submitAttendance(parsed.sessionId, parsed.token);
+      await submitAttendance(parsed.sessionId, parsed.token);
     } catch {
       setErrorMessage('Could not find or read a QR code in the uploaded image. Please try a clearer screenshot.');
       setSubmitting(false);
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -207,11 +230,15 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   };
 
   const submitAttendance = async (sessionId: string, token: string) => {
+    if (submittingRef.current) return;
+
     if (!user) {
       setErrorMessage('You must be signed in as a student to mark attendance.');
+      scanLockedRef.current = false;
       return;
     }
 
+    submittingRef.current = true;
     setSubmitting(true);
     setErrorMessage(null);
 
@@ -234,13 +261,17 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         onAttendanceMarked();
       }
     } catch (err: any) {
+      scanLockedRef.current = false;
       setErrorMessage(err.message || 'Failed to mark attendance. Please check code or try again.');
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
 
   const resetScanner = () => {
+    scanLockedRef.current = false;
+    submittingRef.current = false;
     setSuccessData(null);
     setErrorMessage(null);
     setManualSessionId('');

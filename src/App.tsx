@@ -302,6 +302,13 @@ function MainApp() {
             setIsScannerOpen(false);
             setDeepLinkSessionId(null);
             setDeepLinkToken(null);
+            if (window.location.hash.startsWith('#scan')) {
+              window.history.replaceState(
+                null,
+                '',
+                window.location.pathname + window.location.search
+              );
+            }
           }}
           initialSessionId={deepLinkSessionId}
           initialToken={deepLinkToken}

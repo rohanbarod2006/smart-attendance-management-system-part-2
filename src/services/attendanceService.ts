@@ -1,17 +1,18 @@
 import QRCode from 'qrcode';
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
   query,
+  serverTimestamp,
   setDoc,
   Timestamp,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
-import { db, firebaseConfigError } from '../lib/firebase.ts';
+import { auth, db, firebaseConfigError } from '../lib/firebase.ts';
 import {
   AttendanceRecord,
   AttendanceSession,
@@ -24,6 +25,43 @@ import {
   User,
 } from '../types.ts';
 import { fetchTeacherClasses } from './classService.ts';
+
+const VALID_FIRESTORE_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function logFirestoreDiagnostic(error: unknown, operationType: OperationType, path: string) {
+  const currentUser = auth?.currentUser;
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    code:
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : undefined,
+    operationType,
+    path,
+    authInfo: {
+      userId: currentUser?.uid ?? null,
+      email: currentUser?.email ?? null,
+      emailVerified: currentUser?.emailVerified ?? null,
+      isAnonymous: currentUser?.isAnonymous ?? null,
+    },
+  };
+  console.error('Firestore Error:', JSON.stringify(errInfo));
+}
+
+function getFirestoreErrorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : '';
+}
 
 async function sha256(str: string): Promise<string> {
   const buf = new TextEncoder().encode(str);
@@ -44,7 +82,11 @@ function getEffectiveSessionStatus(
   return 'ACTIVE';
 }
 
-function mapSessionDoc(id: string, data: Record<string, unknown>, presentCount?: number): AttendanceSession {
+export function mapSessionDoc(
+  id: string,
+  data: Record<string, unknown>,
+  presentCount?: number
+): AttendanceSession {
   const expiryTime = typeof data.expiryTime === 'string' ? data.expiryTime : new Date().toISOString();
   return {
     id,
@@ -64,7 +106,7 @@ function mapSessionDoc(id: string, data: Record<string, unknown>, presentCount?:
   };
 }
 
-function mapAttendanceDoc(id: string, data: Record<string, unknown>): AttendanceRecord {
+export function mapAttendanceDoc(id: string, data: Record<string, unknown>): AttendanceRecord {
   return {
     id,
     sessionId: typeof data.sessionId === 'string' ? data.sessionId : '',
@@ -114,6 +156,12 @@ export async function createAttendanceSession(params: {
   const expiryTime = expiryDate.toISOString();
   const expiryTimestamp = Timestamp.fromDate(expiryDate);
 
+  const sessionRef = doc(collection(db, 'sessions'));
+  const secretRef = doc(db, 'sessionSecrets', sessionRef.id);
+
+  // Store only non-secret session metadata in `sessions/{sessionId}`.
+  // The SHA-256 `tokenHash` is stored strictly in `sessionSecrets/{sessionId}`,
+  // which is unreadable by students and verified server-side by Firestore Security Rules.
   const sessionPayload = {
     teacherUid,
     teacherName: (teacherName.trim() || 'Faculty').slice(0, 120),
@@ -122,7 +170,6 @@ export async function createAttendanceSession(params: {
     subjectName: teacherClass.subjectName,
     subjectCode: teacherClass.subjectCode,
     department: teacherClass.department,
-    tokenHash,
     startTime,
     expiryTime,
     expiryTimestamp,
@@ -131,10 +178,26 @@ export async function createAttendanceSession(params: {
     createdAt: startTime,
   };
 
-  const docRef = await addDoc(collection(db, 'sessions'), sessionPayload);
+  const secretPayload = {
+    sessionId: sessionRef.id,
+    teacherUid,
+    tokenHash,
+    createdAt: startTime,
+  };
+
+  const batch = writeBatch(db);
+  batch.set(sessionRef, sessionPayload);
+  batch.set(secretRef, secretPayload);
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    logFirestoreDiagnostic(err, OperationType.WRITE, `sessions/${sessionRef.id}`);
+    throw err;
+  }
 
   const session: AttendanceSession = {
-    id: docRef.id,
+    id: sessionRef.id,
     teacherUid,
     teacherName: sessionPayload.teacherName,
     classId: teacherClass.id,
@@ -151,12 +214,12 @@ export async function createAttendanceSession(params: {
   };
 
   const attendanceUrl = `${window.location.origin}/#scan?sessionId=${encodeURIComponent(
-    docRef.id
+    sessionRef.id
   )}&token=${rawToken}`;
 
   const qrPayload = JSON.stringify({
     type: 'SMART_ATTENDANCE_QR',
-    sessionId: docRef.id,
+    sessionId: sessionRef.id,
     token: rawToken,
     subjectCode: teacherClass.subjectCode,
     className: teacherClass.className,
@@ -281,8 +344,13 @@ export async function markStudentAttendance(params: {
     markedAt: string;
   };
 }> {
-  if (!db) {
+  if (!db || !auth) {
     throw new Error(firebaseConfigError || 'Cloud Firestore is not initialized.');
+  }
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Your Firebase session has expired. Please sign in again as a student.');
   }
 
   const { student } = params;
@@ -295,8 +363,33 @@ export async function markStudentAttendance(params: {
   if (!cleanSessionId || !cleanToken) {
     throw new Error('Both Session ID and QR Token are required.');
   }
+  if (!VALID_FIRESTORE_ID_REGEX.test(cleanSessionId)) {
+    throw new Error('Invalid Session ID format. Please scan a valid classroom QR code.');
+  }
+  if (cleanToken.length < 16 || cleanToken.length > 128) {
+    throw new Error('Invalid QR token format. Please scan a valid classroom QR code.');
+  }
 
-  const sessionSnap = await getDoc(doc(db, 'sessions', cleanSessionId));
+  const studentUid = currentUser.uid;
+  if (student.uid && student.uid !== studentUid) {
+    throw new Error('Signed-in account mismatch. Please refresh and sign in again.');
+  }
+
+  const sessionPath = `sessions/${cleanSessionId}`;
+  let sessionSnap;
+  try {
+    sessionSnap = await getDoc(doc(db, 'sessions', cleanSessionId));
+  } catch (err) {
+    logFirestoreDiagnostic(err, OperationType.GET, sessionPath);
+    const code = getFirestoreErrorCode(err);
+    if (code === 'permission-denied') {
+      throw new Error(
+        'Permission denied while reading the attendance session. Verify that updated Firestore security rules are deployed.'
+      );
+    }
+    throw err;
+  }
+
   if (!sessionSnap.exists()) {
     throw new Error('Invalid attendance session. Session does not exist.');
   }
@@ -307,23 +400,40 @@ export async function markStudentAttendance(params: {
   if (sessionData.status === 'CLOSED') {
     throw new Error('This attendance session has been closed by the teacher.');
   }
-  if (!expiryTime || new Date().getTime() > new Date(expiryTime).getTime()) {
+  if (sessionData.status === 'EXPIRED') {
     throw new Error('This attendance QR code has expired. Please contact your teacher.');
   }
 
-  const computedHash = await sha256(cleanToken);
-  if (sessionData.tokenHash !== computedHash) {
-    throw new Error('Invalid QR code token. Please scan a valid classroom QR code.');
-  }
-
-  const studentUid = student.uid || student.id;
   const recordId = `${cleanSessionId}_${studentUid}`;
+  const recordPath = `attendance/${recordId}`;
   const recordRef = doc(db, 'attendance', recordId);
 
-  const existingSnap = await getDoc(recordRef);
-  if (existingSnap.exists()) {
-    throw new Error('Duplicate attendance: You have already marked your attendance for this session!');
+  // Check if the student already marked attendance for this session.
+  // Note: `firestore.rules` explicitly permits `get` on non-existent `${sessionId}_${request.auth.uid}`.
+  try {
+    const existingSnap = await getDoc(recordRef);
+    if (existingSnap.exists()) {
+      throw new Error('Duplicate attendance: You have already marked your attendance for this session!');
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('Duplicate attendance:')) {
+      throw err;
+    }
+    const code = getFirestoreErrorCode(err);
+    if (code !== 'permission-denied') {
+      logFirestoreDiagnostic(err, OperationType.GET, recordPath);
+      throw err;
+    }
+    // If an older ruleset denied `get` on a non-existent doc, continue to `setDoc`,
+    // which will still enforce duplicate prevention & full server-side verification.
   }
+
+  const cleanStudentName = (student.name.trim() || currentUser.displayName?.trim() || 'Student').slice(0, 120);
+  const cleanStudentEmail = (currentUser.email || student.email).trim().toLowerCase();
+  const cleanRollNumber =
+    typeof student.roll_number === 'string' && student.roll_number.trim()
+      ? student.roll_number.trim().slice(0, 50)
+      : null;
 
   const markedAt = new Date().toISOString();
   const attendancePayload = {
@@ -335,26 +445,55 @@ export async function markStudentAttendance(params: {
     teacherUid: typeof sessionData.teacherUid === 'string' ? sessionData.teacherUid : '',
     teacherName: typeof sessionData.teacherName === 'string' ? sessionData.teacherName : 'Faculty',
     studentUid,
-    studentName: student.name,
-    studentEmail: student.email,
-    rollNumber: student.roll_number || null,
-    tokenHash: computedHash,
+    studentName: cleanStudentName,
+    studentEmail: cleanStudentEmail,
+    rollNumber: cleanRollNumber,
+    qrToken: cleanToken,
     markedAt,
+    markedAtTimestamp: serverTimestamp(),
     status: 'PRESENT',
   };
 
   try {
     await setDoc(recordRef, attendancePayload);
   } catch (err: unknown) {
-    const code =
-      typeof err === 'object' && err !== null && 'code' in err
-        ? String((err as { code?: unknown }).code)
-        : '';
+    logFirestoreDiagnostic(err, OperationType.CREATE, recordPath);
+    const code = getFirestoreErrorCode(err);
+
     if (code === 'permission-denied') {
+      // Distinguish exact cause cleanly for the student without weakening security rules.
+      try {
+        const duplicateCheck = await getDoc(recordRef);
+        if (duplicateCheck.exists()) {
+          throw new Error(
+            'Duplicate attendance: You have already marked your attendance for this session!'
+          );
+        }
+      } catch (dupErr) {
+        if (dupErr instanceof Error && dupErr.message.startsWith('Duplicate attendance:')) {
+          throw dupErr;
+        }
+      }
+
+      if (typeof sessionData.tokenHash === 'string') {
+        throw new Error(
+          'This QR session was created before the latest security update. Ask your teacher to generate a new QR session.'
+        );
+      }
+
+      if (expiryTime && Date.now() >= new Date(expiryTime).getTime()) {
+        throw new Error('This attendance QR code has expired. Please contact your teacher.');
+      }
+
       throw new Error(
-        'Attendance could not be verified by Firestore security rules (expired session, invalid token, or duplicate scan).'
+        'Attendance could not be verified by Firestore security rules. Please confirm you scanned a valid active QR code (or deploy updated Firestore security rules).'
       );
     }
+
+    if (code === 'unavailable') {
+      throw new Error('Cloud Firestore is temporarily unavailable. Check your internet connection and retry.');
+    }
+
     throw err;
   }
 
@@ -362,8 +501,8 @@ export async function markStudentAttendance(params: {
     success: true,
     message: 'Attendance recorded successfully!',
     details: {
-      studentName: student.name,
-      rollNumber: student.roll_number || '',
+      studentName: cleanStudentName,
+      rollNumber: cleanRollNumber || '',
       subjectName: attendancePayload.subjectName,
       subjectCode: attendancePayload.subjectCode,
       className: attendancePayload.className,
