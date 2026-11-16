@@ -1,133 +1,132 @@
-import React, { useState, useEffect } from 'react';
-import { api } from '../services/api.ts';
-import { CollegeClass, Subject } from '../types.ts';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext.tsx';
+import {
+  buildAttendanceCsvUrl,
+  fetchTeacherReports,
+} from '../services/attendanceService.ts';
+import { AttendanceRecord, TeacherClass, TeacherReportsResult } from '../types.ts';
 import {
   Download,
   Filter,
-  BarChart3,
-  Calendar,
-  Users,
   CheckCircle,
-  XCircle,
-  RefreshCw,
-  Search,
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const [classes, setClasses] = useState<CollegeClass[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const { user } = useAuth();
+  const teacherUid = user?.uid || user?.id || '';
+
+  const [classes, setClasses] = useState<TeacherClass[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>('');
-  const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string>('');
 
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [summary, setSummary] = useState<any>({
-    totalSessions: 0,
-    totalPresentCumulative: 0,
-    totalEnrolledCumulative: 0,
-    averagePercentage: 0,
+  const [report, setReport] = useState<TeacherReportsResult>({
+    sessions: [],
+    recordsBySession: {},
+    summary: {
+      totalSessions: 0,
+      totalPresentMarks: 0,
+      activeSessions: 0,
+      averagePresentPerSession: 0,
+    },
   });
   const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Drilldown to view attendees of a specific session
-  const [activeDrilldownSessionId, setActiveDrilldownSessionId] = useState<number | null>(null);
-  const [drilldownDetails, setDrilldownDetails] = useState<any | null>(null);
+  const [activeDrilldownSessionId, setActiveDrilldownSessionId] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadFilters();
-  }, []);
-
-  useEffect(() => {
-    fetchReports();
-  }, [selectedClassId, selectedSubjectId, selectedDate]);
-
-  const loadFilters = async () => {
-    try {
-      const data = await api.getClassesAndSubjects();
-      setClasses(data.classes);
-      setSubjects(data.subjects);
-    } catch (err) {
-      console.error('Failed to load filter options:', err);
-    }
-  };
-
-  const fetchReports = async () => {
-    setLoading(true);
-    try {
-      const res = await api.getTeacherReports({
-        classId: selectedClassId ? Number(selectedClassId) : undefined,
-        subjectId: selectedSubjectId ? Number(selectedSubjectId) : undefined,
-        date: selectedDate || undefined,
-      });
-      setSessions(res.sessions);
-      setSummary(res.summary);
-    } catch (err) {
-      console.error('Failed to load reports:', err);
-    } finally {
+  const loadReports = useCallback(async () => {
+    if (!teacherUid) {
       setLoading(false);
-    }
-  };
-
-  const handleDrilldown = async (sessionId: number) => {
-    if (activeDrilldownSessionId === sessionId) {
-      setActiveDrilldownSessionId(null);
-      setDrilldownDetails(null);
       return;
     }
 
+    setLoading(true);
+    setError(null);
     try {
-      const details = await api.getSessionLive(sessionId);
-      setActiveDrilldownSessionId(sessionId);
-      setDrilldownDetails(details);
+      const res = await fetchTeacherReports({
+        teacherUid,
+        classId: selectedClassId || undefined,
+        date: selectedDate || undefined,
+      });
+      setClasses(res.classes);
+      setReport(res.report);
     } catch (err) {
-      console.error('Failed to load session details:', err);
+      setError(
+        err instanceof Error ? err.message : 'Failed to load attendance reports from Firestore.'
+      );
+    } finally {
+      setLoading(false);
     }
+  }, [teacherUid, selectedClassId, selectedDate]);
+
+  useEffect(() => {
+    loadReports();
+  }, [loadReports]);
+
+  const handleDrilldown = (sessionId: string) => {
+    setActiveDrilldownSessionId((prev) => (prev === sessionId ? null : sessionId));
   };
 
-  const handleExportCsv = () => {
-    const url = api.getExportCsvUrl({
-      classId: selectedClassId ? Number(selectedClassId) : undefined,
-      subjectId: selectedSubjectId ? Number(selectedSubjectId) : undefined,
+  const handleExportAllFilteredCsv = () => {
+    const filteredRecords: AttendanceRecord[] = [];
+    report.sessions.forEach((s) => {
+      const sessionRecords = report.recordsBySession[s.id] || [];
+      filteredRecords.push(...sessionRecords);
     });
+
+    const url = buildAttendanceCsvUrl(filteredRecords);
     const a = document.createElement('a');
     a.href = url;
     a.download = `attendance_report_${Date.now()}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
-  const handleExportSingleSessionCsv = (sessionId: number) => {
-    const url = api.getExportCsvUrl({ sessionId });
+  const handleExportSingleSessionCsv = (sessionId: string) => {
+    const sessionRecords = report.recordsBySession[sessionId] || [];
+    const url = buildAttendanceCsvUrl(sessionRecords);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `attendance_session_${sessionId}_${Date.now()}.csv`;
+    a.download = `attendance_session_${sessionId.slice(0, 8)}_${Date.now()}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
-
-  // Filter subjects for the selected class
-  const filteredSubjects = selectedClassId
-    ? subjects.filter(s => s.class_id === Number(selectedClassId))
-    : subjects;
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-center justify-between">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="font-semibold text-red-800"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-            Attendance Reports & Analytics
+            Attendance Reports &amp; Analytics
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Filter by class, subject, date, view absent students, and export official CSV
+            Filter by your classes and dates, inspect verified student submissions, and export CSV
           </p>
         </div>
 
         <button
-          onClick={handleExportCsv}
-          className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs flex items-center gap-2 self-start sm:self-auto"
+          onClick={handleExportAllFilteredCsv}
+          disabled={report.summary.totalPresentMarks === 0}
+          className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors shadow-xs flex items-center gap-2 self-start sm:self-auto"
         >
           <Download className="w-3.5 h-3.5" />
           <span>Export All Filtered (CSV)</span>
@@ -141,37 +140,20 @@ export const ReportsView: React.FC = () => {
           <span>Filter Records</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Class / Division</label>
+            <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+              Class &amp; Subject
+            </label>
             <select
               value={selectedClassId}
-              onChange={e => {
-                setSelectedClassId(e.target.value);
-                setSelectedSubjectId('');
-              }}
+              onChange={(e) => setSelectedClassId(e.target.value)}
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             >
               <option value="">All Classes</option>
-              {classes.map(c => (
+              {classes.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.class_name} ({c.department})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-500 mb-1">Subject</label>
-            <select
-              value={selectedSubjectId}
-              onChange={e => setSelectedSubjectId(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-            >
-              <option value="">All Subjects</option>
-              {filteredSubjects.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.subject_name} ({s.subject_code})
+                  {c.className} — {c.subjectName} ({c.subjectCode})
                 </option>
               ))}
             </select>
@@ -182,18 +164,17 @@ export const ReportsView: React.FC = () => {
             <input
               type="date"
               value={selectedDate}
-              onChange={e => setSelectedDate(e.target.value)}
+              onChange={(e) => setSelectedDate(e.target.value)}
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             />
           </div>
         </div>
 
-        {(selectedClassId || selectedSubjectId || selectedDate) && (
+        {(selectedClassId || selectedDate) && (
           <div className="mt-3 pt-2 border-t border-slate-100 flex justify-end">
             <button
               onClick={() => {
                 setSelectedClassId('');
-                setSelectedSubjectId('');
                 setSelectedDate('');
               }}
               className="text-xs text-blue-600 hover:text-blue-700 font-medium"
@@ -209,28 +190,28 @@ export const ReportsView: React.FC = () => {
         <div className="bg-white p-4 rounded-xl border border-slate-200">
           <span className="text-[11px] font-semibold text-slate-500">Conducted Sessions</span>
           <p className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-1">
-            {loading ? '—' : summary.totalSessions}
+            {loading ? '—' : report.summary.totalSessions}
           </p>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200">
           <span className="text-[11px] font-semibold text-slate-500">Total Present Marks</span>
           <p className="text-2xl font-bold text-emerald-600 font-mono tabular-nums mt-1">
-            {loading ? '—' : summary.totalPresentCumulative}
+            {loading ? '—' : report.summary.totalPresentMarks}
           </p>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200">
-          <span className="text-[11px] font-semibold text-slate-500">Total Student Eligible</span>
+          <span className="text-[11px] font-semibold text-slate-500">Active Sessions</span>
           <p className="text-2xl font-bold text-slate-700 font-mono tabular-nums mt-1">
-            {loading ? '—' : summary.totalEnrolledCumulative}
+            {loading ? '—' : report.summary.activeSessions}
           </p>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200">
-          <span className="text-[11px] font-semibold text-slate-500">Average Turnout Rate</span>
+          <span className="text-[11px] font-semibold text-slate-500">Avg. Present / Session</span>
           <p className="text-2xl font-bold text-blue-600 font-mono tabular-nums mt-1">
-            {loading ? '—' : `${summary.averagePercentage}%`}
+            {loading ? '—' : report.summary.averagePresentPerSession}
           </p>
         </div>
       </div>
@@ -239,55 +220,67 @@ export const ReportsView: React.FC = () => {
       <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900">Lecture Attendance Sessions</h2>
-          <span className="text-xs text-slate-500 font-mono">{sessions.length} sessions match criteria</span>
+          <span className="text-xs text-slate-500 font-mono">
+            {report.sessions.length} sessions match criteria
+          </span>
         </div>
 
-        {sessions.length > 0 ? (
+        {loading ? (
+          <div className="p-8 text-center text-xs text-slate-500">
+            Loading attendance reports from Cloud Firestore...
+          </div>
+        ) : report.sessions.length > 0 ? (
           <div className="divide-y divide-slate-100">
-            {sessions.map(s => {
-              const turnout = s.total_enrolled > 0
-                ? Math.round((s.present_count / s.total_enrolled) * 100)
-                : 0;
-              const isExpanded = activeDrilldownSessionId === s.session_id;
+            {report.sessions.map((s) => {
+              const isExpanded = activeDrilldownSessionId === s.id;
+              const sessionRecords = report.recordsBySession[s.id] || [];
 
               return (
-                <div key={s.session_id} className="transition-colors">
+                <div key={s.id} className="transition-colors">
                   <div className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 hover:bg-slate-50/60">
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-xs font-mono font-bold text-slate-700">
-                          #{s.session_id}
+                          {s.id.slice(0, 8)}
                         </span>
-                        <span className="font-bold text-slate-900 text-sm">{s.subject_name}</span>
-                        <span className="text-xs font-mono text-slate-500">({s.subject_code})</span>
+                        <span className="font-bold text-slate-900 text-sm">{s.subjectName}</span>
+                        <span className="text-xs font-mono text-slate-500">({s.subjectCode})</span>
                         <span
                           className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
-                            s.session_status === 'ACTIVE'
+                            s.status === 'ACTIVE'
                               ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-slate-100 text-slate-700'
+                              : s.status === 'CLOSED'
+                              ? 'bg-slate-100 text-slate-700'
+                              : 'bg-amber-100 text-amber-800'
                           }`}
                         >
-                          {s.session_status}
+                          {s.status}
                         </span>
                       </div>
                       <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span>Class: <strong className="text-slate-700">{s.class_name}</strong></span>
-                        <span>Faculty: <strong className="text-slate-700">{s.teacher_name}</strong></span>
-                        <span>Date: <span className="font-mono">{new Date(s.start_time).toLocaleString()}</span></span>
+                        <span>
+                          Class: <strong className="text-slate-700">{s.className}</strong>
+                        </span>
+                        <span>
+                          Faculty: <strong className="text-slate-700">{s.teacherName}</strong>
+                        </span>
+                        <span>
+                          Date:{' '}
+                          <span className="font-mono">
+                            {new Date(s.startTime).toLocaleString()}
+                          </span>
+                        </span>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-4 self-end sm:self-center">
-                      <div className="text-right">
-                        <div className="text-xs font-mono">
-                          <span className="font-bold text-emerald-600">{s.present_count}</span>
-                          <span className="text-slate-400"> / {s.total_enrolled}</span>
-                          <span className="text-slate-500 ml-1.5 font-medium">({turnout}%)</span>
-                        </div>
+                      <div className="text-right text-xs font-mono">
+                        <span className="font-bold text-emerald-600">{sessionRecords.length}</span>
+                        <span className="text-slate-500 ml-1">present</span>
                       </div>
 
                       <button
-                        onClick={() => handleDrilldown(s.session_id)}
+                        onClick={() => handleDrilldown(s.id)}
                         className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
                           isExpanded
                             ? 'bg-blue-600 text-white border-blue-600'
@@ -298,7 +291,7 @@ export const ReportsView: React.FC = () => {
                       </button>
 
                       <button
-                        onClick={() => handleExportSingleSessionCsv(s.session_id)}
+                        onClick={() => handleExportSingleSessionCsv(s.id)}
                         title="Download CSV for this lecture"
                         className="p-1.5 text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors"
                       >
@@ -308,71 +301,45 @@ export const ReportsView: React.FC = () => {
                   </div>
 
                   {/* Expanded Drilldown Roster */}
-                  {isExpanded && drilldownDetails && (
-                    <div className="p-4 sm:px-6 bg-slate-50/80 border-t border-slate-200 space-y-4">
-                      {/* Present vs Absent Lists */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* Present Students */}
-                        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-                          <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
-                            <span className="text-xs font-bold text-emerald-700 flex items-center gap-1.5">
-                              <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                              Present Students ({drilldownDetails.records.length})
-                            </span>
-                          </div>
-
-                          {drilldownDetails.records.length > 0 ? (
-                            <div className="max-h-60 overflow-y-auto space-y-2">
-                              {drilldownDetails.records.map((r: any) => (
-                                <div key={r.id} className="text-xs flex justify-between items-center py-1 border-b border-slate-50">
-                                  <div>
-                                    <span className="font-semibold text-slate-800">{r.student_name}</span>
-                                    <span className="text-[11px] font-mono text-slate-500 ml-2">
-                                      {r.roll_number || 'N/A'}
-                                    </span>
-                                  </div>
-                                  <span className="text-[11px] font-mono text-slate-500">
-                                    {new Date(r.marked_at).toLocaleTimeString()}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-slate-400 py-3 text-center">No students present.</p>
-                          )}
+                  {isExpanded && (
+                    <div className="p-4 sm:px-6 bg-slate-50/80 border-t border-slate-200">
+                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+                        <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
+                          <span className="text-xs font-bold text-emerald-700 flex items-center gap-1.5">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                            Verified Present Students ({sessionRecords.length})
+                          </span>
                         </div>
 
-                        {/* Absent Students */}
-                        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-                          <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
-                            <span className="text-xs font-bold text-red-700 flex items-center gap-1.5">
-                              <XCircle className="w-3.5 h-3.5 text-red-600" />
-                              Absent Students ({drilldownDetails.absentStudents.length})
-                            </span>
-                          </div>
-
-                          {drilldownDetails.absentStudents.length > 0 ? (
-                            <div className="max-h-60 overflow-y-auto space-y-2">
-                              {drilldownDetails.absentStudents.map((s: any) => (
-                                <div key={s.id} className="text-xs flex justify-between items-center py-1 border-b border-slate-50">
-                                  <div>
-                                    <span className="font-semibold text-slate-800">{s.name}</span>
-                                    <span className="text-[11px] font-mono text-slate-500 ml-2">
-                                      {s.roll_number || 'N/A'}
-                                    </span>
-                                  </div>
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-50 text-red-700 font-semibold">
-                                    Absent
+                        {sessionRecords.length > 0 ? (
+                          <div className="max-h-60 overflow-y-auto space-y-2">
+                            {sessionRecords.map((r) => (
+                              <div
+                                key={r.id}
+                                className="text-xs flex justify-between items-center py-1.5 border-b border-slate-50"
+                              >
+                                <div>
+                                  <span className="font-semibold text-slate-800">
+                                    {r.studentName}
+                                  </span>
+                                  <span className="text-[11px] font-mono text-slate-500 ml-2">
+                                    {r.rollNumber || 'N/A'}
+                                  </span>
+                                  <span className="text-[11px] text-slate-400 ml-2">
+                                    ({r.studentEmail})
                                   </span>
                                 </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="text-xs text-emerald-600 py-3 text-center font-medium">
-                              100% attendance! No absentees.
-                            </p>
-                          )}
-                        </div>
+                                <span className="text-[11px] font-mono text-slate-500">
+                                  {new Date(r.markedAt).toLocaleTimeString()}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-500 py-3 text-center">
+                            No students have marked attendance yet.
+                          </p>
+                        )}
                       </div>
                     </div>
                   )}
@@ -382,7 +349,7 @@ export const ReportsView: React.FC = () => {
           </div>
         ) : (
           <div className="p-8 text-center text-xs text-slate-500">
-            No attendance records match the selected filter criteria.
+            No attendance records available.
           </div>
         )}
       </div>

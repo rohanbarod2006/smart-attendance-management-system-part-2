@@ -23,7 +23,27 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isValidUser(data) {
+    function matchesAuthEmail(email) {
+      return email is string
+        && email.size() >= 3
+        && email.size() <= 160
+        && request.auth.token.email is string
+        && email.lower() == request.auth.token.email.lower();
+    }
+
+    function hasNoLegacyApprovalFields(data) {
+      return !('approvalStatus' in data)
+        && !('rejectionReason' in data)
+        && !('reviewedBy' in data)
+        && !('reviewedByEmail' in data)
+        && !('reviewedAt' in data)
+        && !('approvedBy' in data)
+        && !('approvedAt' in data)
+        && !('rejectedBy' in data)
+        && !('rejectedAt' in data);
+    }
+
+    function isValidStudentUser(data) {
       return data.keys().hasAll(['id', 'name', 'email', 'role', 'created_at'])
         && data.keys().hasOnly(['id', 'name', 'email', 'role', 'roll_number', 'created_at'])
         && data.id is string
@@ -31,44 +51,403 @@ service cloud.firestore {
         && data.name is string
         && data.name.size() >= 1
         && data.name.size() <= 120
-        && data.email is string
-        && data.email.size() >= 3
-        && data.email.size() <= 160
-        && request.auth.token.email is string
-        && data.email.lower() == request.auth.token.email.lower()
-        && data.role is string
-        && data.role in ['student', 'teacher', 'admin']
+        && matchesAuthEmail(data.email)
+        && data.role == 'student'
         && (!('roll_number' in data) || data.roll_number == null || (data.roll_number is string && data.roll_number.size() <= 50))
         && data.created_at is string
         && data.created_at.size() >= 10
         && data.created_at.size() <= 40;
     }
 
+    function isValidTeacherUser(data) {
+      return data.keys().hasAll([
+          'uid',
+          'name',
+          'email',
+          'collegeName',
+          'department',
+          'facultyId',
+          'designation',
+          'role',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'name',
+          'email',
+          'collegeName',
+          'department',
+          'facultyId',
+          'designation',
+          'role',
+          'createdAt'
+        ])
+        && data.uid is string
+        && data.uid == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 120
+        && matchesAuthEmail(data.email)
+        && data.collegeName is string
+        && data.collegeName.size() >= 1
+        && data.collegeName.size() <= 150
+        && data.department is string
+        && data.department.size() >= 1
+        && data.department.size() <= 120
+        && data.facultyId is string
+        && data.facultyId.size() >= 1
+        && data.facultyId.size() <= 60
+        && data.designation is string
+        && data.designation.size() >= 1
+        && data.designation.size() <= 100
+        && data.role == 'teacher'
+        && data.createdAt is string
+        && data.createdAt.size() >= 10
+        && data.createdAt.size() <= 40;
+    }
+
+    function isTeacher() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+
+    function isStudent() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student';
+    }
+
+    function isValidTeacherClass(data) {
+      return data.keys().hasAll([
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'academicYear',
+          'semester',
+          'teacherUid',
+          'teacherName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'academicYear',
+          'semester',
+          'teacherUid',
+          'teacherName',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.className is string
+        && data.className.size() >= 1
+        && data.className.size() <= 100
+        && data.subjectName is string
+        && data.subjectName.size() >= 1
+        && data.subjectName.size() <= 120
+        && data.subjectCode is string
+        && data.subjectCode.size() >= 1
+        && data.subjectCode.size() <= 30
+        && data.department is string
+        && data.department.size() >= 1
+        && data.department.size() <= 120
+        && data.academicYear is string
+        && data.academicYear.size() >= 1
+        && data.academicYear.size() <= 30
+        && data.semester is string
+        && data.semester.size() >= 1
+        && data.semester.size() <= 30
+        && data.teacherUid is string
+        && data.teacherUid == request.auth.uid
+        && data.teacherName is string
+        && data.teacherName.size() >= 1
+        && data.teacherName.size() <= 120
+        && data.createdAt is string
+        && data.createdAt.size() >= 10
+        && data.createdAt.size() <= 40
+        && data.updatedAt is string
+        && data.updatedAt.size() >= 10
+        && data.updatedAt.size() <= 40;
+    }
+
+    function isValidSession(data) {
+      return data.keys().hasAll([
+          'teacherUid',
+          'teacherName',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'tokenHash',
+          'startTime',
+          'expiryTime',
+          'expiryTimestamp',
+          'durationMinutes',
+          'status',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'teacherUid',
+          'teacherName',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'tokenHash',
+          'startTime',
+          'expiryTime',
+          'expiryTimestamp',
+          'durationMinutes',
+          'status',
+          'createdAt'
+        ])
+        && data.teacherUid is string
+        && data.teacherUid == request.auth.uid
+        && data.teacherName is string
+        && data.teacherName.size() >= 1
+        && data.teacherName.size() <= 120
+        && isValidId(data.classId)
+        && data.className is string
+        && data.className.size() >= 1
+        && data.className.size() <= 100
+        && data.subjectName is string
+        && data.subjectName.size() >= 1
+        && data.subjectName.size() <= 120
+        && data.subjectCode is string
+        && data.subjectCode.size() >= 1
+        && data.subjectCode.size() <= 30
+        && data.department is string
+        && data.department.size() >= 1
+        && data.department.size() <= 120
+        && data.tokenHash is string
+        && data.tokenHash.size() == 64
+        && data.startTime is string
+        && data.startTime.size() >= 10
+        && data.startTime.size() <= 40
+        && data.expiryTime is string
+        && data.expiryTime.size() >= 10
+        && data.expiryTime.size() <= 40
+        && data.expiryTimestamp is timestamp
+        && data.durationMinutes is number
+        && data.durationMinutes >= 1
+        && data.durationMinutes <= 180
+        && data.status == 'ACTIVE'
+        && data.createdAt is string
+        && data.createdAt.size() >= 10
+        && data.createdAt.size() <= 40;
+    }
+
+    function isValidAttendanceRecord(data) {
+      return data.keys().hasAll([
+          'sessionId',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'teacherUid',
+          'teacherName',
+          'studentUid',
+          'studentName',
+          'studentEmail',
+          'tokenHash',
+          'markedAt',
+          'status'
+        ])
+        && data.keys().hasOnly([
+          'sessionId',
+          'classId',
+          'className',
+          'subjectName',
+          'subjectCode',
+          'teacherUid',
+          'teacherName',
+          'studentUid',
+          'studentName',
+          'studentEmail',
+          'rollNumber',
+          'tokenHash',
+          'markedAt',
+          'status'
+        ])
+        && isValidId(data.sessionId)
+        && isValidId(data.classId)
+        && data.className is string
+        && data.className.size() >= 1
+        && data.className.size() <= 100
+        && data.subjectName is string
+        && data.subjectName.size() >= 1
+        && data.subjectName.size() <= 120
+        && data.subjectCode is string
+        && data.subjectCode.size() >= 1
+        && data.subjectCode.size() <= 30
+        && isValidId(data.teacherUid)
+        && data.teacherName is string
+        && data.teacherName.size() >= 1
+        && data.teacherName.size() <= 120
+        && data.studentUid is string
+        && data.studentUid == request.auth.uid
+        && data.studentName is string
+        && data.studentName.size() >= 1
+        && data.studentName.size() <= 120
+        && matchesAuthEmail(data.studentEmail)
+        && (!('rollNumber' in data) || data.rollNumber == null || (data.rollNumber is string && data.rollNumber.size() <= 50))
+        && data.tokenHash is string
+        && data.tokenHash.size() == 64
+        && data.markedAt is string
+        && data.markedAt.size() >= 10
+        && data.markedAt.size() <= 40
+        && data.status == 'PRESENT';
+    }
+
     match /users/{userId} {
-      // Unauthenticated users cannot read or write user profiles.
-      // Signed-in users can read only their own profile; listing all users is blocked.
+      // Users can read only their own profile; listing all users is disabled.
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if false;
 
-      // Public client-side registration may create only the caller's own profile with role == 'student'.
+      // Public registration may create only the caller's own profile as 'student' or 'teacher'.
       allow create: if isSignedIn()
         && isValidId(userId)
         && request.auth.uid == userId
-        && isValidUser(incoming())
-        && incoming().role == 'student';
+        && (
+          isValidStudentUser(incoming()) ||
+          isValidTeacherUser(incoming())
+        );
 
-      // Users may update only their display name or roll number; role, id, email, and created_at are immutable.
+      // Users cannot modify their role, id/uid, email, or created timestamp.
+      // Existing teacher profiles may safely drop legacy approval fields during login migration.
       allow update: if isSignedIn()
         && isValidId(userId)
         && request.auth.uid == userId
-        && isValidUser(incoming())
-        && incoming().id == existing().id
-        && incoming().role == existing().role
-        && incoming().email == existing().email
-        && incoming().created_at == existing().created_at
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'roll_number']);
+        && (
+          (
+            existing().role == 'student'
+            && isValidStudentUser(incoming())
+            && incoming().id == existing().id
+            && incoming().role == existing().role
+            && incoming().email == existing().email
+            && incoming().created_at == existing().created_at
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'roll_number'])
+          ) || (
+            existing().role == 'teacher'
+            && isValidTeacherUser(incoming())
+            && hasNoLegacyApprovalFields(incoming())
+            && incoming().uid == existing().uid
+            && incoming().role == existing().role
+            && incoming().email == existing().email
+            && incoming().createdAt == existing().createdAt
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'collegeName',
+              'department',
+              'facultyId',
+              'designation',
+              'approvalStatus',
+              'rejectionReason',
+              'reviewedBy',
+              'reviewedByEmail',
+              'reviewedAt',
+              'approvedBy',
+              'approvedAt',
+              'rejectedBy',
+              'rejectedAt'
+            ])
+          )
+        );
 
       allow delete: if false;
+    }
+
+    match /classes/{classId} {
+      // Teachers can manage only their own classes.
+      allow get: if isValidId(classId) && isTeacher() && existing().teacherUid == request.auth.uid;
+      allow list: if isTeacher() && existing().teacherUid == request.auth.uid;
+
+      allow create: if isValidId(classId)
+        && isTeacher()
+        && isValidTeacherClass(incoming())
+        && incoming().teacherUid == request.auth.uid;
+
+      allow update: if isValidId(classId)
+        && isTeacher()
+        && existing().teacherUid == request.auth.uid
+        && isValidTeacherClass(incoming())
+        && incoming().teacherUid == existing().teacherUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'className',
+          'subjectName',
+          'subjectCode',
+          'department',
+          'academicYear',
+          'semester',
+          'teacherName',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(classId)
+        && isTeacher()
+        && existing().teacherUid == request.auth.uid;
+    }
+
+    match /sessions/{sessionId} {
+      // Teachers manage only their own sessions; students may read session metadata
+      // (plain QR tokens are never stored, only SHA-256 tokenHash).
+      allow get: if isValidId(sessionId) && isSignedIn();
+      allow list: if isSignedIn() && (
+        (isTeacher() && existing().teacherUid == request.auth.uid) ||
+        isStudent()
+      );
+
+      allow create: if isValidId(sessionId)
+        && isTeacher()
+        && isValidSession(incoming())
+        && incoming().teacherUid == request.auth.uid;
+
+      allow update: if isValidId(sessionId)
+        && isTeacher()
+        && existing().teacherUid == request.auth.uid
+        && incoming().teacherUid == existing().teacherUid
+        && incoming().classId == existing().classId
+        && incoming().tokenHash == existing().tokenHash
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status'])
+        && incoming().status in ['ACTIVE', 'CLOSED', 'EXPIRED'];
+
+      allow delete: if isValidId(sessionId)
+        && isTeacher()
+        && existing().teacherUid == request.auth.uid;
+    }
+
+    match /attendance/{recordId} {
+      // Students can read only their own attendance; teachers can read attendance for their sessions.
+      allow get: if isValidId(recordId)
+        && isSignedIn()
+        && (existing().studentUid == request.auth.uid || existing().teacherUid == request.auth.uid);
+
+      allow list: if isSignedIn()
+        && (existing().studentUid == request.auth.uid || existing().teacherUid == request.auth.uid);
+
+      // Deterministic document ID (${sessionId}_${studentUid}) prevents duplicate scans.
+      // Rules verify active status, server-side expiry timestamp, and SHA-256 tokenHash match.
+      allow create: if isValidId(recordId)
+        && isStudent()
+        && recordId == (incoming().sessionId + '_' + request.auth.uid)
+        && incoming().studentUid == request.auth.uid
+        && isValidAttendanceRecord(incoming())
+        && exists(/databases/$(database)/documents/sessions/$(incoming().sessionId))
+        && get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.status == 'ACTIVE'
+        && request.time <= get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.expiryTimestamp
+        && incoming().tokenHash == get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.tokenHash
+        && incoming().teacherUid == get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.teacherUid
+        && incoming().classId == get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.classId;
+
+      allow update, delete: if false;
     }
   }
 }

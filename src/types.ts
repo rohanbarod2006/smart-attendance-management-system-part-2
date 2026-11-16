@@ -1,60 +1,70 @@
+export type UserRole = 'teacher' | 'student';
+
 export interface User {
   id: string;
+  uid?: string;
   name: string;
   email: string;
-  role: 'teacher' | 'student' | 'admin';
+  role: UserRole;
   roll_number?: string | null;
   created_at?: string;
+  createdAt?: string;
+  collegeName?: string;
+  department?: string;
+  facultyId?: string;
+  designation?: string;
 }
 
-export interface CollegeClass {
-  id: number;
-  class_name: string;
+export interface TeacherClass {
+  id: string;
+  className: string;
+  subjectName: string;
+  subjectCode: string;
   department: string;
-  academic_year: string;
-}
-
-export interface Subject {
-  id: number;
-  subject_name: string;
-  subject_code: string;
-  class_id: number;
+  academicYear: string;
+  semester: string;
+  teacherUid: string;
+  teacherName: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AttendanceSession {
-  id: number;
-  teacher_id: number;
-  subject_id: number;
-  class_id: number;
-  class_name: string;
-  subject_name: string;
-  subject_code: string;
-  teacher_name?: string;
-  start_time: string;
-  expiry_time: string;
+  id: string;
+  teacherUid: string;
+  teacherName: string;
+  classId: string;
+  className: string;
+  subjectName: string;
+  subjectCode: string;
+  department: string;
+  startTime: string;
+  expiryTime: string;
+  durationMinutes: number;
   status: 'ACTIVE' | 'CLOSED' | 'EXPIRED';
-  duration_minutes?: number;
-  present_count?: number;
-  total_enrolled?: number;
+  createdAt: string;
+  presentCount?: number;
 }
 
 export interface AttendanceRecord {
-  id: number;
-  session_id: number;
-  student_id: number;
-  student_name?: string;
-  student_email?: string;
-  roll_number?: string | null;
-  marked_at: string;
-  status: string;
-  subject_name?: string;
-  subject_code?: string;
-  class_name?: string;
-  teacher_name?: string;
+  id: string;
+  sessionId: string;
+  classId: string;
+  className: string;
+  subjectName: string;
+  subjectCode: string;
+  teacherUid: string;
+  teacherName: string;
+  studentUid: string;
+  studentName: string;
+  studentEmail: string;
+  rollNumber?: string | null;
+  markedAt: string;
+  status: 'PRESENT';
 }
 
 export interface SubjectAttendanceStat {
-  subjectId: number;
+  classId: string;
   subjectName: string;
   subjectCode: string;
   className: string;
@@ -66,25 +76,43 @@ export interface SubjectAttendanceStat {
 
 export interface StudentDashboardData {
   profile: User;
-  classes: CollegeClass[];
   subjectPercentages: SubjectAttendanceStat[];
   overallPercentage: number;
-  totalEligibleSessions: number;
+  totalConductedSessions: number;
   totalAttendedSessions: number;
   recentHistory: AttendanceRecord[];
 }
 
 export interface TeacherDashboardStats {
-  totalStudents: number;
+  totalClasses: number;
   activeSessionsCount: number;
   activeSessions: AttendanceSession[];
   todayAttendanceCount: number;
+  totalSessionsCount: number;
+  totalAttendanceMarks: number;
   recentSessions: AttendanceSession[];
+}
+
+export interface SessionLiveDetails {
+  session: AttendanceSession;
+  records: AttendanceRecord[];
+  presentCount: number;
+}
+
+export interface TeacherReportsResult {
+  sessions: AttendanceSession[];
+  recordsBySession: Record<string, AttendanceRecord[]>;
+  summary: {
+    totalSessions: number;
+    totalPresentMarks: number;
+    activeSessions: number;
+    averagePresentPerSession: number;
+  };
 }
 
 export interface QRPayload {
   type: string;
-  sessionId: number;
+  sessionId: string;
   token: string;
   subjectCode: string;
   className: string;

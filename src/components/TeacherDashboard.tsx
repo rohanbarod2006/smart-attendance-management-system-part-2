@@ -1,8 +1,22 @@
-import React, { useState, useEffect } from 'react';
-import { api } from '../services/api.ts';
-import { TeacherDashboardStats, AttendanceSession } from '../types.ts';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext.tsx';
 import {
-  Users,
+  createTeacherClass,
+  deleteTeacherClass,
+  updateTeacherClass,
+  type CreateTeacherClassPayload,
+} from '../services/classService.ts';
+import {
+  closeAttendanceSession,
+  fetchSessionLiveDetails,
+  fetchTeacherDashboardData,
+} from '../services/attendanceService.ts';
+import {
+  SessionLiveDetails,
+  TeacherClass,
+  TeacherDashboardStats,
+} from '../types.ts';
+import {
   QrCode,
   CheckCircle,
   Clock,
@@ -10,9 +24,14 @@ import {
   StopCircle,
   BarChart2,
   RefreshCw,
-  ExternalLink,
   ChevronRight,
   AlertTriangle,
+  BookOpen,
+  Plus,
+  Pencil,
+  Trash2,
+  X,
+  Briefcase,
 } from 'lucide-react';
 
 interface TeacherDashboardProps {
@@ -24,63 +43,87 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onStartSession,
   onViewReports,
 }) => {
+  const { user } = useAuth();
+  const teacherUid = user?.uid || user?.id || '';
+
   const [stats, setStats] = useState<TeacherDashboardStats | null>(null);
+  const [classes, setClasses] = useState<TeacherClass[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [selectedActiveSessionId, setSelectedActiveSessionId] = useState<number | null>(null);
-  const [activeSessionLiveData, setActiveSessionLiveData] = useState<{
-    session: AttendanceSession;
-    records: any[];
-    presentCount: number;
-    totalEnrolled: number;
-    absentStudents: any[];
-  } | null>(null);
+  const [selectedActiveSessionId, setSelectedActiveSessionId] = useState<string | null>(null);
+  const [activeSessionLiveData, setActiveSessionLiveData] = useState<SessionLiveDetails | null>(null);
 
   const [timeRemaining, setTimeRemaining] = useState<string>('');
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const fetchStats = async () => {
+  // Teacher Firestore classes management state
+  const [classError, setClassError] = useState<string | null>(null);
+  const [classSuccess, setClassSuccess] = useState<string | null>(null);
+  const [isClassModalOpen, setIsClassModalOpen] = useState<boolean>(false);
+  const [editingClass, setEditingClass] = useState<TeacherClass | null>(null);
+  const [classSubmitting, setClassSubmitting] = useState<boolean>(false);
+  const [deletingClassId, setDeletingClassId] = useState<string | null>(null);
+  const [classForm, setClassForm] = useState<CreateTeacherClassPayload>({
+    className: '',
+    subjectName: '',
+    subjectCode: '',
+    department: user?.department || '',
+    academicYear: '',
+    semester: '',
+  });
+
+  const loadDashboard = useCallback(async () => {
+    if (!teacherUid || user?.role !== 'teacher') {
+      setClasses([]);
+      setStats(null);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
     try {
-      const data = await api.getTeacherStats();
-      setStats(data);
-      if (data.activeSessions && data.activeSessions.length > 0) {
-        setSelectedActiveSessionId(data.activeSessions[0].id);
+      const data = await fetchTeacherDashboardData(teacherUid);
+      setClasses(data.classes);
+      setStats(data.stats);
+      if (data.stats.activeSessions.length > 0) {
+        setSelectedActiveSessionId(data.stats.activeSessions[0].id);
       } else {
         setSelectedActiveSessionId(null);
         setActiveSessionLiveData(null);
       }
     } catch (err) {
-      console.error('Failed to load teacher dashboard stats:', err);
+      setActionError(
+        err instanceof Error ? err.message : 'Failed to load teacher dashboard from Firestore.'
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [teacherUid, user?.role]);
 
   useEffect(() => {
-    fetchStats();
-  }, []);
+    loadDashboard();
+  }, [loadDashboard]);
 
   // Poll active session attendees every 3 seconds for real-time live attendance
   useEffect(() => {
-    if (!selectedActiveSessionId) {
+    if (!selectedActiveSessionId || !teacherUid) {
       setActiveSessionLiveData(null);
       return;
     }
 
-    const fetchLiveSession = async () => {
+    const pollLiveSession = async () => {
       try {
-        const live = await api.getSessionLive(selectedActiveSessionId);
+        const live = await fetchSessionLiveDetails(selectedActiveSessionId, teacherUid);
         setActiveSessionLiveData(live);
 
-        // Calculate countdown
-        const expiry = new Date(live.session.expiry_time).getTime();
+        const expiry = new Date(live.session.expiryTime).getTime();
         const now = Date.now();
         const diff = Math.max(0, Math.floor((expiry - now) / 1000));
 
-        if (diff === 0) {
+        if (diff === 0 || live.session.status !== 'ACTIVE') {
           setTimeRemaining('Expired');
-          fetchStats(); // refresh overview
+          loadDashboard();
         } else {
           const mins = Math.floor(diff / 60);
           const secs = diff % 60;
@@ -91,18 +134,85 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       }
     };
 
-    fetchLiveSession();
-    const interval = setInterval(fetchLiveSession, 3000);
+    pollLiveSession();
+    const interval = setInterval(pollLiveSession, 3000);
     return () => clearInterval(interval);
-  }, [selectedActiveSessionId]);
+  }, [selectedActiveSessionId, teacherUid, loadDashboard]);
 
-  const handleCloseSession = async (sessionId: number) => {
+  const handleCloseSession = async (sessionId: string) => {
     setActionError(null);
     try {
-      await api.closeSession(sessionId);
-      fetchStats();
+      await closeAttendanceSession(sessionId);
+      await loadDashboard();
     } catch (err: any) {
       setActionError(err.message || 'Failed to close session');
+    }
+  };
+
+  const openNewClassModal = () => {
+    setEditingClass(null);
+    setClassForm({
+      className: '',
+      subjectName: '',
+      subjectCode: '',
+      department: user?.department || '',
+      academicYear: '',
+      semester: '',
+    });
+    setClassError(null);
+    setIsClassModalOpen(true);
+  };
+
+  const openEditClassModal = (item: TeacherClass) => {
+    setEditingClass(item);
+    setClassForm({
+      className: item.className,
+      subjectName: item.subjectName,
+      subjectCode: item.subjectCode,
+      department: item.department,
+      academicYear: item.academicYear,
+      semester: item.semester,
+    });
+    setClassError(null);
+    setIsClassModalOpen(true);
+  };
+
+  const handleSaveClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setClassSubmitting(true);
+    setClassError(null);
+    setClassSuccess(null);
+
+    try {
+      if (editingClass) {
+        await updateTeacherClass(editingClass.id, user.name, classForm);
+        setClassSuccess(`Updated class "${classForm.className}".`);
+      } else {
+        await createTeacherClass(teacherUid, user.name, classForm);
+        setClassSuccess(`Created class "${classForm.className}".`);
+      }
+      setIsClassModalOpen(false);
+      await loadDashboard();
+    } catch (err) {
+      setClassError(err instanceof Error ? err.message : 'Failed to save class.');
+    } finally {
+      setClassSubmitting(false);
+    }
+  };
+
+  const handleDeleteClass = async (item: TeacherClass) => {
+    setDeletingClassId(item.id);
+    setClassError(null);
+    setClassSuccess(null);
+    try {
+      await deleteTeacherClass(item.id);
+      setClassSuccess(`Removed class "${item.className}".`);
+      await loadDashboard();
+    } catch (err) {
+      setClassError(err instanceof Error ? err.message : 'Failed to delete class.');
+    } finally {
+      setDeletingClassId(null);
     }
   };
 
@@ -122,14 +232,27 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </button>
         </div>
       )}
+
       {/* Top Banner / Actions Strip */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
         <div>
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+              <Briefcase className="w-3 h-3" />
+              Teacher / Faculty
+            </span>
+            {user?.department && (
+              <span className="text-[11px] text-slate-500">
+                {user.department}
+                {user.facultyId ? ` • ${user.facultyId}` : ''}
+              </span>
+            )}
+          </div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
             Teacher Attendance Portal
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Real-time session monitoring, instant QR generation, and student verification
+            Real-time session monitoring, class management, instant QR generation, and attendance records
           </p>
         </div>
 
@@ -137,7 +260,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           <button
             onClick={() => {
               setRefreshing(true);
-              fetchStats();
+              loadDashboard();
             }}
             disabled={refreshing}
             className="p-2 text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs"
@@ -166,23 +289,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1 */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Enrolled Students</span>
+            <span className="text-xs font-semibold text-slate-500">My Classes</span>
             <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
-              <Users className="w-4 h-4" />
+              <BookOpen className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-              {loading ? '—' : stats?.totalStudents || 0}
+              {loading ? '—' : stats?.totalClasses ?? 0}
             </span>
-            <span className="text-xs text-slate-500">Total in College</span>
+            <span className="text-xs text-slate-500">Assigned Subjects</span>
           </div>
         </div>
 
-        {/* Card 2 */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-500">Active QR Sessions</span>
@@ -192,7 +313,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-              {loading ? '—' : stats?.activeSessionsCount || 0}
+              {loading ? '—' : stats?.activeSessionsCount ?? 0}
             </span>
             <span className="text-xs text-emerald-700 font-medium">
               {stats?.activeSessionsCount ? 'Accepting Scans' : 'Idle'}
@@ -200,35 +321,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
         </div>
 
-        {/* Card 3 */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Today's Total Attended</span>
+            <span className="text-xs font-semibold text-slate-500">Today&apos;s Verified Marks</span>
             <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
               <CheckCircle className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-              {loading ? '—' : stats?.todayAttendanceCount || 0}
+              {loading ? '—' : stats?.todayAttendanceCount ?? 0}
             </span>
-            <span className="text-xs text-slate-500">Verified Submissions</span>
+            <span className="text-xs text-slate-500">Scanned Today</span>
           </div>
         </div>
 
-        {/* Card 4 */}
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500">Total Lectures Tracked</span>
+            <span className="text-xs font-semibold text-slate-500">Lectures Conducted</span>
             <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
               <Clock className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
-              {loading ? '—' : stats?.recentSessions.length || 0}
+              {loading ? '—' : stats?.totalSessionsCount ?? 0}
             </span>
-            <span className="text-xs text-slate-500">In SQLite Database</span>
+            <span className="text-xs text-slate-500">In Cloud Firestore</span>
           </div>
         </div>
       </div>
@@ -244,7 +363,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   Live Attendance Session
                 </span>
                 <h2 className="text-base font-bold leading-tight">
-                  {activeSessionLiveData.session.subject_name} ({activeSessionLiveData.session.subject_code})
+                  {activeSessionLiveData.session.subjectName} ({activeSessionLiveData.session.subjectCode})
                 </h2>
               </div>
             </div>
@@ -271,35 +390,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <div>
                 <span className="text-xs font-semibold text-slate-700">Class Division:</span>
                 <span className="text-xs text-slate-600 ml-1.5 font-medium">
-                  {activeSessionLiveData.session.class_name}
+                  {activeSessionLiveData.session.className}
                 </span>
                 <span className="text-slate-300 mx-2">|</span>
                 <span className="text-xs font-semibold text-slate-700">Started:</span>
                 <span className="text-xs text-slate-600 ml-1.5 font-mono">
-                  {new Date(activeSessionLiveData.session.start_time).toLocaleTimeString()}
+                  {new Date(activeSessionLiveData.session.startTime).toLocaleTimeString()}
                 </span>
               </div>
 
-              <div className="flex items-center gap-4 text-xs">
-                <div>
-                  <span className="text-slate-500">Present Count:</span>{' '}
-                  <span className="font-bold text-emerald-600 font-mono text-sm tabular-nums">
-                    {activeSessionLiveData.presentCount}
-                  </span>
-                  <span className="text-slate-400"> / {activeSessionLiveData.totalEnrolled}</span>
-                </div>
-                <div className="w-32 bg-slate-100 h-2 rounded-full overflow-hidden">
-                  <div
-                    className="bg-emerald-500 h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${
-                        activeSessionLiveData.totalEnrolled > 0
-                          ? (activeSessionLiveData.presentCount / activeSessionLiveData.totalEnrolled) * 100
-                          : 0
-                      }%`,
-                    }}
-                  />
-                </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-500">Verified Present:</span>
+                <span className="font-bold text-emerald-600 font-mono text-sm tabular-nums">
+                  {activeSessionLiveData.presentCount}
+                </span>
               </div>
             </div>
 
@@ -317,9 +421,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               {activeSessionLiveData.records.length === 0 ? (
                 <div className="py-8 text-center bg-slate-50 rounded-lg border border-slate-200">
                   <Clock className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                  <p className="text-xs font-semibold text-slate-700">Waiting for students to scan QR code...</p>
+                  <p className="text-xs font-semibold text-slate-700">
+                    No students have marked attendance yet.
+                  </p>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    Keep the QR code displayed on the classroom screen.
+                    Keep the QR code displayed for students to scan.
                   </p>
                 </div>
               ) : (
@@ -335,15 +441,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {activeSessionLiveData.records.map((r, i) => (
+                      {activeSessionLiveData.records.map((r) => (
                         <tr key={r.id} className="hover:bg-slate-50/70 transition-colors">
                           <td className="py-2.5 px-4 font-mono font-medium text-slate-800">
-                            {r.roll_number || `STU-${r.student_id}`}
+                            {r.rollNumber || 'N/A'}
                           </td>
-                          <td className="py-2.5 px-4 font-semibold text-slate-900">{r.student_name}</td>
-                          <td className="py-2.5 px-4 text-slate-500">{r.student_email}</td>
+                          <td className="py-2.5 px-4 font-semibold text-slate-900">{r.studentName}</td>
+                          <td className="py-2.5 px-4 text-slate-500">{r.studentEmail}</td>
                           <td className="py-2.5 px-4 font-mono text-slate-600">
-                            {new Date(r.marked_at).toLocaleTimeString()}
+                            {new Date(r.markedAt).toLocaleTimeString()}
                           </td>
                           <td className="py-2.5 px-4 text-right">
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800">
@@ -366,7 +472,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
           <div>
             <h2 className="text-base font-bold text-slate-900">Recent Attendance Sessions</h2>
-            <p className="text-xs text-slate-500">History of lectures conducted</p>
+            <p className="text-xs text-slate-500">History of lectures conducted from Firestore</p>
           </div>
           <button
             onClick={onViewReports}
@@ -377,34 +483,37 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </button>
         </div>
 
-        {stats && stats.recentSessions.length > 0 ? (
+        {loading ? (
+          <div className="p-8 text-center text-xs text-slate-500">
+            Loading sessions from Cloud Firestore...
+          </div>
+        ) : stats && stats.recentSessions.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
                 <tr>
                   <th className="py-3 px-4 font-semibold">Session ID</th>
-                  <th className="py-3 px-4 font-semibold">Date & Time</th>
+                  <th className="py-3 px-4 font-semibold">Date &amp; Time</th>
                   <th className="py-3 px-4 font-semibold">Subject</th>
                   <th className="py-3 px-4 font-semibold">Class</th>
-                  <th className="py-3 px-4 font-semibold text-center">Present / Enrolled</th>
+                  <th className="py-3 px-4 font-semibold text-center">Present Marks</th>
                   <th className="py-3 px-4 font-semibold text-right">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {stats.recentSessions.map(s => (
+                {stats.recentSessions.map((s) => (
                   <tr key={s.id} className="hover:bg-slate-50/70 transition-colors">
-                    <td className="py-3 px-4 font-mono text-slate-500">#{s.id}</td>
+                    <td className="py-3 px-4 font-mono text-slate-500">{s.id.slice(0, 8)}</td>
                     <td className="py-3 px-4 font-mono text-slate-700">
-                      {new Date(s.start_time).toLocaleString()}
+                      {new Date(s.startTime).toLocaleString()}
                     </td>
                     <td className="py-3 px-4">
-                      <span className="font-semibold text-slate-900">{s.subject_name}</span>
-                      <span className="text-slate-400 font-mono ml-1.5">({s.subject_code})</span>
+                      <span className="font-semibold text-slate-900">{s.subjectName}</span>
+                      <span className="text-slate-400 font-mono ml-1.5">({s.subjectCode})</span>
                     </td>
-                    <td className="py-3 px-4 text-slate-600">{s.class_name}</td>
-                    <td className="py-3 px-4 text-center font-mono tabular-nums">
-                      <span className="font-semibold text-slate-900">{s.present_count ?? 0}</span>
-                      <span className="text-slate-400"> / {s.total_enrolled ?? 0}</span>
+                    <td className="py-3 px-4 text-slate-600">{s.className}</td>
+                    <td className="py-3 px-4 text-center font-mono tabular-nums font-semibold text-slate-900">
+                      {s.presentCount ?? 0}
                     </td>
                     <td className="py-3 px-4 text-right">
                       <span
@@ -427,16 +536,293 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         ) : (
           <div className="p-8 text-center">
             <QrCode className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-            <p className="text-xs text-slate-500">No attendance sessions recorded yet.</p>
-            <button
-              onClick={onStartSession}
-              className="mt-3 px-4 py-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
-            >
-              Start First Attendance Session
-            </button>
+            <p className="text-xs font-semibold text-slate-700">No lectures scheduled.</p>
+            <p className="text-xs text-slate-500 mt-1">
+              {classes.length === 0
+                ? 'Create a class below first, then start your first QR attendance session.'
+                : 'No attendance records available yet. Start a QR session for one of your classes.'}
+            </p>
+            {classes.length === 0 ? (
+              <button
+                type="button"
+                onClick={openNewClassModal}
+                className="mt-3 px-4 py-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+              >
+                Create Your First Class
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onStartSession}
+                className="mt-3 px-4 py-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+              >
+                Start First Attendance Session
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* My Classes Management (Cloud Firestore, isolated to this teacher) */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-blue-600" />
+              <span>My Assigned Classes</span>
+            </h2>
+            <p className="text-xs text-slate-500">
+              Create and manage your classes and subjects in Cloud Firestore
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openNewClassModal}
+            className="self-start sm:self-auto px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs flex items-center gap-1.5"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Add Class</span>
+          </button>
+        </div>
+
+        {(classError || classSuccess) && (
+          <div className="px-6 pt-4">
+            {classError && (
+              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-center justify-between gap-2">
+                <span>{classError}</span>
+                <button
+                  type="button"
+                  onClick={() => setClassError(null)}
+                  className="font-semibold text-red-800"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+            {classSuccess && (
+              <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between gap-2">
+                <span>{classSuccess}</span>
+                <button
+                  type="button"
+                  onClick={() => setClassSuccess(null)}
+                  className="font-semibold text-emerald-900"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {loading ? (
+          <div className="p-6 text-center text-xs text-slate-500">
+            Loading your classes from Cloud Firestore...
+          </div>
+        ) : classes.length === 0 ? (
+          <div className="p-8 text-center space-y-2">
+            <BookOpen className="w-8 h-8 text-slate-300 mx-auto" />
+            <p className="text-xs font-semibold text-slate-700">No classes created yet.</p>
+            <p className="text-xs text-slate-500">
+              Add your courses and divisions here to launch QR attendance sessions.
+            </p>
+            <button
+              type="button"
+              onClick={openNewClassModal}
+              className="mt-2 px-4 py-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+            >
+              Create Your First Class
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
+                <tr>
+                  <th className="py-3 px-4 font-semibold">Class / Division</th>
+                  <th className="py-3 px-4 font-semibold">Subject</th>
+                  <th className="py-3 px-4 font-semibold">Code</th>
+                  <th className="py-3 px-4 font-semibold">Department</th>
+                  <th className="py-3 px-4 font-semibold">Semester / Year</th>
+                  <th className="py-3 px-4 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {classes.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
+                    <td className="py-3 px-4 font-semibold text-slate-900">{item.className}</td>
+                    <td className="py-3 px-4 text-slate-800">{item.subjectName}</td>
+                    <td className="py-3 px-4 font-mono text-blue-700 font-semibold">
+                      {item.subjectCode}
+                    </td>
+                    <td className="py-3 px-4 text-slate-600">{item.department}</td>
+                    <td className="py-3 px-4 text-slate-600">
+                      {item.semester} &bull; {item.academicYear}
+                    </td>
+                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openEditClassModal(item)}
+                          className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors inline-flex items-center gap-1"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deletingClassId === item.id}
+                          onClick={() => handleDeleteClass(item)}
+                          className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>{deletingClassId === item.id ? 'Removing...' : 'Delete'}</span>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Add / Edit Class Modal */}
+      {isClassModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md border border-slate-200 overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900">
+                {editingClass ? 'Edit Class' : 'Create New Class'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsClassModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveClass} className="p-6 space-y-3 text-xs">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Class / Division Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={100}
+                  value={classForm.className}
+                  onChange={(e) => setClassForm({ ...classForm, className: e.target.value })}
+                  placeholder="e.g. SE-IT Div A"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Subject Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={120}
+                    value={classForm.subjectName}
+                    onChange={(e) => setClassForm({ ...classForm, subjectName: e.target.value })}
+                    placeholder="e.g. Data Structures"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Subject Code
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={30}
+                    value={classForm.subjectCode}
+                    onChange={(e) => setClassForm({ ...classForm, subjectCode: e.target.value })}
+                    placeholder="e.g. IT301"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono uppercase"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Department
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={120}
+                  value={classForm.department}
+                  onChange={(e) => setClassForm({ ...classForm, department: e.target.value })}
+                  placeholder="e.g. Information Technology"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Semester
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={30}
+                    value={classForm.semester}
+                    onChange={(e) => setClassForm({ ...classForm, semester: e.target.value })}
+                    placeholder="e.g. Sem IV"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                    Academic Year
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={30}
+                    value={classForm.academicYear}
+                    onChange={(e) => setClassForm({ ...classForm, academicYear: e.target.value })}
+                    placeholder="e.g. 2025-2026"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setIsClassModalOpen(false)}
+                  className="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={classSubmitting}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs disabled:opacity-50"
+                >
+                  {classSubmitting
+                    ? 'Saving...'
+                    : editingClass
+                    ? 'Update Class'
+                    : 'Create Class'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -7,3 +7,10 @@ coverage/
 .env*
 !.env.example
 .env.local
+functions/node_modules/
+functions/lib/
+firebase-debug.log
+firebase-debug.*.log
+.firebase/
+*serviceAccountKey*.json
+*firebase-adminsdk*.json

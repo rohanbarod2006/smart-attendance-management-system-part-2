@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import confetti from 'canvas-confetti';
-import { api } from '../services/api.ts';
-import { QrCode, X, Camera, Upload, AlertCircle, CheckCircle2, RefreshCw, KeyRound, Clock } from 'lucide-react';
+import { useAuth } from '../context/AuthContext.tsx';
+import { markStudentAttendance } from '../services/attendanceService.ts';
+import { QrCode, X, Camera, Upload, AlertCircle, CheckCircle2, KeyRound } from 'lucide-react';
 
 interface QRScannerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAttendanceMarked?: () => void;
-  initialSessionId?: number | null;
+  initialSessionId?: string | null;
   initialToken?: string | null;
 }
 
@@ -19,6 +20,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   initialSessionId,
   initialToken,
 }) => {
+  const { user } = useAuth();
   const [mode, setMode] = useState<'camera' | 'upload' | 'manual'>('camera');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
@@ -26,7 +28,9 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   const [manualToken, setManualToken] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [successData, setSuccessData] = useState<any | null>(null);
+  const [successData, setSuccessData] = useState<Awaited<
+    ReturnType<typeof markStudentAttendance>
+  > | null>(null);
 
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
   const readerElementId = 'qr-camera-stream-container';
@@ -34,7 +38,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   // If initial URL parameters were passed (e.g. from a link or scan)
   useEffect(() => {
     if (initialSessionId && initialToken) {
-      setManualSessionId(initialSessionId.toString());
+      setManualSessionId(initialSessionId);
       setManualToken(initialToken);
       setMode('manual');
     }
@@ -57,8 +61,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     setCameraError(null);
     setErrorMessage(null);
 
-    // Wait a brief tick for container mount
-    await new Promise(r => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 150));
 
     try {
       if (!html5QrCodeRef.current) {
@@ -83,7 +86,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         (decodedText) => {
           handleScannedContent(decodedText);
         },
-        (error) => {
+        () => {
           // ignore stream scanning frame misses
         }
       );
@@ -91,7 +94,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       console.warn('Camera start error:', err);
       setIsScanning(false);
       setCameraError(
-        'Camera permission was denied or no camera device is available. Please use the "Upload QR Image" or "Manual Token / Link" fallback below.'
+        'Camera permission was denied or no camera device is available. Please use the "Upload QR" or "Manual Code" option below.'
       );
     }
   };
@@ -108,35 +111,38 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     setIsScanning(false);
   };
 
-  const parseQRContent = (content: string): { sessionId: number; token: string } | null => {
+  const parseQRContent = (content: string): { sessionId: string; token: string } | null => {
+    const trimmed = content.trim();
+
     // 1. Check if JSON payload
     try {
-      const obj = JSON.parse(content);
+      const obj = JSON.parse(trimmed);
       if (obj.sessionId && obj.token) {
-        return { sessionId: Number(obj.sessionId), token: String(obj.token).trim() };
+        return { sessionId: String(obj.sessionId).trim(), token: String(obj.token).trim() };
       }
-    } catch (e) {
+    } catch {
       // Not JSON, continue to URL checks
     }
 
-    // 2. Check if URL with query parameters (e.g. #scan?sessionId=1&token=xyz or ?sessionId=1&token=xyz)
+    // 2. Check if URL with query parameters (e.g. #scan?sessionId=abc&token=xyz)
     try {
-      const url = new URL(content.startsWith('http') ? content : `http://dummy.com/${content}`);
-      const searchParams = new URLSearchParams(url.search || url.hash.replace(/^#.*\?/, ''));
+      const url = new URL(trimmed.startsWith('http') ? trimmed : `http://dummy.com/${trimmed}`);
+      const hashQuery = url.hash.includes('?') ? url.hash.split('?')[1] : '';
+      const searchParams = new URLSearchParams(url.search || hashQuery);
       const sessionId = searchParams.get('sessionId') || searchParams.get('session');
       const token = searchParams.get('token');
       if (sessionId && token) {
-        return { sessionId: Number(sessionId), token: token.trim() };
+        return { sessionId: sessionId.trim(), token: token.trim() };
       }
-    } catch (e) {
+    } catch {
       // Not URL
     }
 
     // 3. Check simple format "sessionId:token"
-    if (content.includes(':')) {
-      const parts = content.split(':');
-      if (parts.length >= 2 && !isNaN(Number(parts[0]))) {
-        return { sessionId: Number(parts[0]), token: parts[1].trim() };
+    if (trimmed.includes(':')) {
+      const parts = trimmed.split(':');
+      if (parts.length >= 2 && parts[0].trim() && parts[1].trim()) {
+        return { sessionId: parts[0].trim(), token: parts[1].trim() };
       }
     }
 
@@ -174,7 +180,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       }
 
       submitAttendance(parsed.sessionId, parsed.token);
-    } catch (err: any) {
+    } catch {
       setErrorMessage('Could not find or read a QR code in the uploaded image. Please try a clearer screenshot.');
       setSubmitting(false);
     }
@@ -182,13 +188,9 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manualSessionId || !manualToken) {
-      setErrorMessage('Both Session ID and QR Token are required.');
-      return;
-    }
 
-    // If student pasted full URL into the token input
-    if (manualToken.includes('token=')) {
+    // If student pasted full URL or JSON into the token input
+    if (manualToken.includes('token=') || manualToken.trim().startsWith('{')) {
       const parsed = parseQRContent(manualToken);
       if (parsed) {
         submitAttendance(parsed.sessionId, parsed.token);
@@ -196,18 +198,27 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       }
     }
 
-    submitAttendance(Number(manualSessionId), manualToken.trim());
+    if (!manualSessionId.trim() || !manualToken.trim()) {
+      setErrorMessage('Both Session ID and QR Token are required.');
+      return;
+    }
+
+    submitAttendance(manualSessionId.trim(), manualToken.trim());
   };
 
-  const submitAttendance = async (sessionId: number, token: string) => {
+  const submitAttendance = async (sessionId: string, token: string) => {
+    if (!user) {
+      setErrorMessage('You must be signed in as a student to mark attendance.');
+      return;
+    }
+
     setSubmitting(true);
     setErrorMessage(null);
 
     try {
-      const res = await api.markAttendance({ sessionId, token });
+      const res = await markStudentAttendance({ sessionId, token, student: user });
       setSuccessData(res);
 
-      // Trigger celebratory confetti effect
       try {
         confetti({
           particleCount: 80,
@@ -215,7 +226,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
           origin: { y: 0.6 },
           colors: ['#2563eb', '#16a34a', '#3b82f6', '#10b981'],
         });
-      } catch (e) {
+      } catch {
         // confetti fallback
       }
 
@@ -276,15 +287,15 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                 Attendance Recorded!
               </h3>
               <p className="text-xs text-slate-500 mb-4">
-                Your presence has been successfully registered in the college database.
+                Your presence has been verified and saved in Cloud Firestore.
               </p>
 
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-left text-xs space-y-2 mb-6">
                 <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
                   <span className="text-slate-500">Student:</span>
-                  <span className="font-semibold text-slate-800">{successData.details?.studentName}</span>
+                  <span className="font-semibold text-slate-800">{successData.details.studentName}</span>
                 </div>
-                {successData.details?.rollNumber && (
+                {successData.details.rollNumber && (
                   <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
                     <span className="text-slate-500">Roll Number:</span>
                     <span className="font-semibold text-slate-800">{successData.details.rollNumber}</span>
@@ -293,21 +304,21 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                 <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
                   <span className="text-slate-500">Subject:</span>
                   <span className="font-semibold text-slate-800">
-                    {successData.details?.subjectName} ({successData.details?.subjectCode})
+                    {successData.details.subjectName} ({successData.details.subjectCode})
                   </span>
                 </div>
                 <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
                   <span className="text-slate-500">Class:</span>
-                  <span className="font-semibold text-slate-800">{successData.details?.className}</span>
+                  <span className="font-semibold text-slate-800">{successData.details.className}</span>
                 </div>
                 <div className="flex justify-between border-b border-slate-200/60 pb-1.5">
                   <span className="text-slate-500">Teacher:</span>
-                  <span className="font-semibold text-slate-800">{successData.details?.teacherName}</span>
+                  <span className="font-semibold text-slate-800">{successData.details.teacherName}</span>
                 </div>
                 <div className="flex justify-between pt-1">
                   <span className="text-slate-500">Timestamp:</span>
                   <span className="font-mono text-slate-700">
-                    {new Date(successData.details?.markedAt).toLocaleTimeString()}
+                    {new Date(successData.details.markedAt).toLocaleTimeString()}
                   </span>
                 </div>
               </div>
@@ -325,7 +336,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                   onClick={onClose}
                   className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs"
                 >
-                  Close & View Dashboard
+                  Close &amp; View Dashboard
                 </button>
               </div>
             </div>
@@ -418,7 +429,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                   )}
 
                   <p className="text-[11px] text-slate-500 text-center">
-                    Point your camera at the teacher's projector screen. The QR code will be detected automatically.
+                    Point your camera at the teacher&apos;s projector screen. The QR code will be detected automatically.
                   </p>
                 </div>
               )}
@@ -459,11 +470,10 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                       Session ID
                     </label>
                     <input
-                      type="number"
+                      type="text"
                       value={manualSessionId}
-                      onChange={e => setManualSessionId(e.target.value)}
-                      placeholder="e.g. 4"
-                      required
+                      onChange={(e) => setManualSessionId(e.target.value)}
+                      placeholder="Paste Session ID (optional if pasting full link below)"
                       className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                     />
                   </div>
@@ -475,7 +485,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
                     <input
                       type="text"
                       value={manualToken}
-                      onChange={e => setManualToken(e.target.value)}
+                      onChange={(e) => setManualToken(e.target.value)}
                       placeholder="Paste 48-char token or attendance link"
                       required
                       className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"

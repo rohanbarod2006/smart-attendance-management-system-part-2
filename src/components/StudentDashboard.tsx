@@ -1,15 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { api } from '../services/api.ts';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext.tsx';
+import { fetchStudentDashboardData } from '../services/attendanceService.ts';
 import { StudentDashboardData } from '../types.ts';
 import {
   QrCode,
-  User,
-  GraduationCap,
-  Calendar,
   AlertTriangle,
-  CheckCircle,
   RefreshCw,
-  BookOpen,
   Clock,
   Award,
 } from 'lucide-react';
@@ -19,28 +15,56 @@ interface StudentDashboardProps {
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) => {
+  const { user } = useAuth();
   const [data, setData] = useState<StudentDashboardData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchDashboard = async () => {
+  const fetchDashboard = useCallback(async () => {
+    if (!user) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    setError(null);
     try {
-      const res = await api.getStudentDashboard();
+      const res = await fetchStudentDashboardData(user);
       setData(res);
     } catch (err) {
-      console.error('Failed to load student dashboard:', err);
+      setError(
+        err instanceof Error ? err.message : 'Failed to load attendance records from Firestore.'
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     fetchDashboard();
-  }, []);
+  }, [fetchDashboard]);
+
+  const profile = data?.profile || user;
+  const hasRecords = (data?.totalConductedSessions ?? 0) > 0;
+  const overallPct = data?.overallPercentage ?? 0;
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-center justify-between">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="font-semibold text-red-800"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
         <div>
@@ -48,7 +72,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
             Student Attendance Portal
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Monitor subject eligibility, college attendance requirements, and lecture records
+            Monitor your verified attendance records and subject participation in Cloud Firestore
           </p>
         </div>
 
@@ -82,36 +106,32 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
           <div>
             <div className="flex items-center gap-3 mb-4">
               <div className="w-12 h-12 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-lg shadow-inner">
-                {data?.profile.name ? data.profile.name[0] : 'S'}
+                {profile?.name ? profile.name[0].toUpperCase() : 'S'}
               </div>
               <div>
                 <h2 className="text-base font-bold text-slate-900 leading-tight">
-                  {data?.profile.name || 'Student'}
+                  {profile?.name || 'Student'}
                 </h2>
                 <p className="text-xs font-mono font-medium text-blue-600">
-                  {data?.profile.roll_number || 'Roll No: Pending'}
+                  {profile?.roll_number || 'Roll No: Not specified'}
                 </p>
               </div>
             </div>
 
             <div className="space-y-2 text-xs border-t border-slate-100 pt-3">
-              <div className="flex justify-between text-slate-600">
+              <div className="flex justify-between text-slate-600 gap-2">
                 <span className="text-slate-400">Email:</span>
-                <span className="font-medium truncate max-w-[170px]">{data?.profile.email}</span>
+                <span className="font-medium truncate max-w-[190px]">{profile?.email}</span>
               </div>
-              <div className="flex justify-between text-slate-600">
-                <span className="text-slate-400">Class:</span>
-                <span className="font-semibold text-slate-800">
-                  {data?.classes.map(c => c.class_name).join(', ') || 'SE-IT Div A'}
+              <div className="flex justify-between text-slate-600 gap-2">
+                <span className="text-slate-400">Role:</span>
+                <span className="font-semibold text-slate-800 capitalize">{profile?.role || 'student'}</span>
+              </div>
+              <div className="flex justify-between text-slate-600 gap-2">
+                <span className="text-slate-400">Subjects Attended:</span>
+                <span className="font-medium font-mono">
+                  {loading ? '—' : data?.subjectPercentages.length ?? 0}
                 </span>
-              </div>
-              <div className="flex justify-between text-slate-600">
-                <span className="text-slate-400">Department:</span>
-                <span className="font-medium">Information Technology</span>
-              </div>
-              <div className="flex justify-between text-slate-600">
-                <span className="text-slate-400">Academic Year:</span>
-                <span className="font-medium">2025-2026</span>
               </div>
             </div>
           </div>
@@ -134,39 +154,50 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
               <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
                 Overall Attendance Progress
               </span>
-              <span
-                className={`text-xs px-2.5 py-0.5 rounded-full font-semibold ${
-                  (data?.overallPercentage ?? 100) >= 75
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-red-100 text-red-800'
-                }`}
-              >
-                {(data?.overallPercentage ?? 100) >= 75 ? 'Eligible for Exams' : 'Defaulter Alert (<75%)'}
-              </span>
+              {hasRecords ? (
+                <span
+                  className={`text-xs px-2.5 py-0.5 rounded-full font-semibold ${
+                    overallPct >= 75
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-red-100 text-red-800'
+                  }`}
+                >
+                  {overallPct >= 75 ? 'Eligible for Exams' : 'Below 75% Threshold'}
+                </span>
+              ) : (
+                <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-600">
+                  No Records Yet
+                </span>
+              )}
             </div>
 
             <div className="flex items-baseline gap-3 my-2">
               <span className="text-4xl font-extrabold text-slate-900 font-mono tabular-nums">
-                {loading ? '—' : `${data?.overallPercentage ?? 0}%`}
+                {loading ? '—' : `${overallPct}%`}
               </span>
               <span className="text-xs text-slate-500">
-                ({data?.totalAttendedSessions ?? 0} attended of {data?.totalEligibleSessions ?? 0} conducted lectures)
+                {hasRecords
+                  ? `(${data?.totalAttendedSessions ?? 0} attended of ${data?.totalConductedSessions ?? 0} conducted lectures)`
+                  : 'No attendance records available.'}
               </span>
             </div>
 
-            {/* Custom Progress Bar */}
+            {/* Progress Bar */}
             <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden mt-3 mb-2 relative">
-              {/* 75% Requirement Marker */}
               <div
                 className="absolute top-0 bottom-0 w-0.5 bg-slate-400 z-10"
                 style={{ left: '75%' }}
-                title="75% University Minimum Requirement"
+                title="75% Minimum Requirement"
               />
               <div
                 className={`h-full rounded-full transition-all duration-700 ${
-                  (data?.overallPercentage ?? 100) >= 75 ? 'bg-blue-600' : 'bg-red-500'
+                  !hasRecords
+                    ? 'bg-slate-300'
+                    : overallPct >= 75
+                    ? 'bg-blue-600'
+                    : 'bg-red-500'
                 }`}
-                style={{ width: `${Math.min(100, data?.overallPercentage ?? 0)}%` }}
+                style={{ width: `${Math.min(100, overallPct)}%` }}
               />
             </div>
             <div className="flex justify-between text-[11px] text-slate-400">
@@ -179,7 +210,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
           <div className="mt-4 p-3 bg-blue-50/70 border border-blue-100 rounded-lg text-xs text-blue-800 flex items-start gap-2">
             <Award className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
             <span>
-              Attendance is evaluated dynamically per subject. Maintain over 75% in each subject to be in the nominal list.
+              Attendance percentages update automatically as you scan live classroom QR sessions created by your teachers.
             </span>
           </div>
         </div>
@@ -190,15 +221,19 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
         <div className="px-6 py-4 border-b border-slate-200">
           <h2 className="text-base font-bold text-slate-900">Subject-Wise Attendance Breakdown</h2>
           <p className="text-xs text-slate-500">
-            Calculated as: (Sessions Present ÷ Total Sessions Conducted) × 100
+            Calculated from verified Firestore sessions for each class you attend
           </p>
         </div>
 
         <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data?.subjectPercentages && data.subjectPercentages.length > 0 ? (
-            data.subjectPercentages.map(s => (
+          {loading ? (
+            <div className="col-span-full py-8 text-center text-xs text-slate-500">
+              Loading subject attendance from Cloud Firestore...
+            </div>
+          ) : data?.subjectPercentages && data.subjectPercentages.length > 0 ? (
+            data.subjectPercentages.map((s) => (
               <div
-                key={s.subjectId}
+                key={s.classId}
                 className={`p-4 rounded-xl border transition-all ${
                   s.isDefaulter
                     ? 'border-red-200 bg-red-50/30'
@@ -208,7 +243,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div>
                     <span className="text-[11px] font-mono font-medium text-slate-500">
-                      {s.subjectCode}
+                      {s.subjectCode} · {s.className}
                     </span>
                     <h3 className="text-sm font-bold text-slate-900 leading-tight">
                       {s.subjectName}
@@ -225,7 +260,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
                   </span>
                 </div>
 
-                {/* Progress bar */}
                 <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden my-3">
                   <div
                     className={`h-full rounded-full ${s.isDefaulter ? 'bg-red-500' : 'bg-emerald-500'}`}
@@ -235,7 +269,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
 
                 <div className="flex justify-between text-xs text-slate-600">
                   <span>Present: {s.attendedSessions}</span>
-                  <span className="text-slate-400">Total: {s.totalSessions}</span>
+                  <span className="text-slate-400">Conducted: {s.totalSessions}</span>
                 </div>
 
                 {s.isDefaulter && (
@@ -248,7 +282,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
             ))
           ) : (
             <div className="col-span-full py-8 text-center text-xs text-slate-500">
-              No subjects or enrollment found.
+              No attendance records available.
             </div>
           )}
         </div>
@@ -261,7 +295,11 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
           <p className="text-xs text-slate-500">Verified lecture attendance entries</p>
         </div>
 
-        {data?.recentHistory && data.recentHistory.length > 0 ? (
+        {loading ? (
+          <div className="p-8 text-center text-xs text-slate-500">
+            Loading attendance history...
+          </div>
+        ) : data?.recentHistory && data.recentHistory.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
@@ -274,16 +312,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {data.recentHistory.map(rec => (
+                {data.recentHistory.map((rec) => (
                   <tr key={rec.id} className="hover:bg-slate-50/70 transition-colors">
                     <td className="py-3 px-4">
-                      <span className="font-semibold text-slate-900">{rec.subject_name}</span>
-                      <span className="text-slate-400 font-mono ml-1.5">({rec.subject_code})</span>
+                      <span className="font-semibold text-slate-900">{rec.subjectName}</span>
+                      <span className="text-slate-400 font-mono ml-1.5">({rec.subjectCode})</span>
                     </td>
-                    <td className="py-3 px-4 text-slate-600">{rec.class_name}</td>
-                    <td className="py-3 px-4 text-slate-700">{rec.teacher_name}</td>
+                    <td className="py-3 px-4 text-slate-600">{rec.className}</td>
+                    <td className="py-3 px-4 text-slate-700">{rec.teacherName}</td>
                     <td className="py-3 px-4 font-mono text-slate-600">
-                      {new Date(rec.marked_at).toLocaleString()}
+                      {new Date(rec.markedAt).toLocaleString()}
                     </td>
                     <td className="py-3 px-4 text-right">
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800">
@@ -298,7 +336,10 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({ onScanQR }) 
         ) : (
           <div className="p-8 text-center">
             <Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-            <p className="text-xs text-slate-500">No attendance marked yet.</p>
+            <p className="text-xs font-semibold text-slate-700">No attendance records available.</p>
+            <p className="text-xs text-slate-500 mt-1">
+              Scan an active QR code from your teacher to record your first lecture attendance.
+            </p>
             <button
               onClick={onScanQR}
               className="mt-3 px-4 py-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-800 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors"

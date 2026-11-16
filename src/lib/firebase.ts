@@ -7,6 +7,7 @@ import {
 } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import { getFirestore, type Firestore } from 'firebase/firestore';
+import { getFunctions, type Functions } from 'firebase/functions';
 
 function normalizeEnvValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -60,6 +61,7 @@ const firebaseConfig: FirebaseOptions = {
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
+let functions: Functions | null = null;
 let firebaseConfigError: string | null = null;
 
 if (invalidEnvVars.length > 0) {
@@ -70,6 +72,7 @@ if (invalidEnvVars.length > 0) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
+    functions = getFunctions(app, 'us-central1');
   } catch (err) {
     firebaseConfigError =
       err instanceof Error
@@ -79,8 +82,9 @@ if (invalidEnvVars.length > 0) {
     app = null;
     auth = null;
     db = null;
+    functions = null;
   }
 }
 
 export const isFirebaseConfigured: boolean = Boolean(app && auth && db);
-export { app, auth, db, firebaseConfigError };
+export { app, auth, db, functions, firebaseConfigError };

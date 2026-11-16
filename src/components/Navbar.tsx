@@ -1,13 +1,13 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
-import { QrCode, LogOut, BookOpen, BarChart3, User, RefreshCw, FileText } from 'lucide-react';
+import { QrCode, LogOut, RefreshCw, FileText, BarChart3 } from 'lucide-react';
 
 interface NavbarProps {
   currentTab: 'dashboard' | 'reports' | 'viva';
   onSelectTab: (tab: 'dashboard' | 'reports' | 'viva') => void;
   onOpenCreateSession?: () => void;
   onOpenScanModal?: () => void;
-  onOpenDemoSwitcher?: () => void;
+  onOpenAccountPortal?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -15,9 +15,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectTab,
   onOpenCreateSession,
   onOpenScanModal,
-  onOpenDemoSwitcher,
+  onOpenAccountPortal,
 }) => {
   const { user, logout } = useAuth();
+
+  const isTeacher = user?.role === 'teacher';
+  const isStudent = user?.role === 'student';
+
+  const roleStatusLabel =
+    user?.role === 'teacher'
+      ? `Teacher${user.department ? ` · ${user.department}` : ''}`
+      : `${user?.role ?? ''}${user?.roll_number ? ` (${user.roll_number})` : ''}`;
 
   return (
     <header className="sticky top-0 z-40 bg-white border-b border-slate-200">
@@ -49,7 +57,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               Dashboard
             </button>
 
-            {user?.role === 'teacher' && (
+            {isTeacher && (
               <button
                 onClick={() => onSelectTab('reports')}
                 className={`px-3 py-1.5 rounded-md transition-colors whitespace-nowrap text-xs sm:text-sm flex items-center gap-1.5 ${
@@ -75,9 +83,9 @@ export const Navbar: React.FC<NavbarProps> = ({
               Project Docs & Viva
             </button>
 
-            {onOpenDemoSwitcher && (
+            {onOpenAccountPortal && (
               <button
-                onClick={onOpenDemoSwitcher}
+                onClick={onOpenAccountPortal}
                 className="hidden md:flex items-center gap-1 px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap"
                 title={user ? 'Account portal' : 'Sign in or register'}
               >
@@ -92,11 +100,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             {user ? (
               <>
                 <div className="hidden lg:flex flex-col text-right">
-                  <span className="text-xs font-semibold text-slate-900 truncate max-w-[140px]">{user.name}</span>
-                  <span className="text-[11px] text-slate-500 capitalize">{user.role} {user.roll_number ? `(${user.roll_number})` : ''}</span>
+                  <span className="text-xs font-semibold text-slate-900 truncate max-w-[160px]">{user.name}</span>
+                  <span className="text-[11px] text-slate-500 capitalize">{roleStatusLabel}</span>
                 </div>
 
-                {user.role === 'teacher' && onOpenCreateSession && (
+                {isTeacher && onOpenCreateSession && (
                   <button
                     onClick={onOpenCreateSession}
                     className="px-3 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap shadow-xs flex items-center gap-1.5"
@@ -106,7 +114,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 )}
 
-                {user.role === 'student' && onOpenScanModal && (
+                {isStudent && onOpenScanModal && (
                   <button
                     onClick={onOpenScanModal}
                     className="px-3 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors whitespace-nowrap shadow-xs flex items-center gap-1.5"
