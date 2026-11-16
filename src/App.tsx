@@ -16,13 +16,33 @@ import { AuthModal } from './components/AuthModal.tsx';
 import { QrCode, Shield, RefreshCw, UserCheck, CheckCircle2 } from 'lucide-react';
 
 function MainApp() {
-  const { user, loading, quickDemoLogin, logout } = useAuth();
+  const { user, loading, missingProfileEmail, logout } = useAuth();
   const [currentTab, setCurrentTab] = useState<'dashboard' | 'reports' | 'viva'>('dashboard');
 
   // Modals
   const [isCreateSessionOpen, setIsCreateSessionOpen] = useState<boolean>(false);
   const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authModalTab, setAuthModalTab] = useState<'login' | 'register'>('login');
+  const [refreshKey, setRefreshKey] = useState<number>(0);
+
+  const openAuthModal = (tab: 'login' | 'register' = 'login') => {
+    setAuthModalTab(tab);
+    setIsAuthModalOpen(true);
+  };
+
+  useEffect(() => {
+    if (missingProfileEmail) {
+      setIsAuthModalOpen(true);
+    }
+  }, [missingProfileEmail]);
+
+  // Reset teacher-only tab when switching to student role
+  useEffect(() => {
+    if (user?.role === 'student' && currentTab === 'reports') {
+      setCurrentTab('dashboard');
+    }
+  }, [user?.role, currentTab]);
 
   // Deep-link / scanned URL states
   const [deepLinkSessionId, setDeepLinkSessionId] = useState<number | null>(null);
@@ -72,12 +92,14 @@ function MainApp() {
         onSelectTab={setCurrentTab}
         onOpenCreateSession={() => setIsCreateSessionOpen(true)}
         onOpenScanModal={() => setIsScannerOpen(true)}
-        onOpenDemoSwitcher={() => setIsAuthModalOpen(true)}
+        onOpenDemoSwitcher={() => openAuthModal('login')}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-20">
-        {!user ? (
+        {currentTab === 'viva' ? (
+          <VivaDocumentationModal />
+        ) : !user ? (
           /* Landing & Login Prompt */
           <div className="max-w-2xl mx-auto py-8 sm:py-12 text-center space-y-6">
             <div className="w-16 h-16 rounded-2xl bg-blue-600 text-white flex items-center justify-center mx-auto shadow-md">
@@ -95,47 +117,47 @@ function MainApp() {
 
             <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-xs max-w-md mx-auto space-y-4">
               <span className="text-xs font-bold text-slate-700 block uppercase tracking-wider">
-                Select a Role to Start
+                Sign In or Register to Start
               </span>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
-                  onClick={() => quickDemoLogin('teacher@college.edu')}
+                  onClick={() => openAuthModal('login')}
                   className="p-4 bg-blue-50/80 hover:bg-blue-100/80 border border-blue-200 rounded-xl text-left transition-all group"
                 >
                   <span className="text-base font-bold text-blue-900 block group-hover:text-blue-700">
-                    Faculty / Teacher
+                    Sign In
                   </span>
                   <span className="text-xs text-blue-700/80 mt-1 block">
-                    Generate session QR, display countdown & view live roster
+                    Faculty &amp; registered students sign in with email
                   </span>
                 </button>
 
                 <button
-                  onClick={() => quickDemoLogin('student1@college.edu')}
+                  onClick={() => openAuthModal('register')}
                   className="p-4 bg-emerald-50/80 hover:bg-emerald-100/80 border border-emerald-200 rounded-xl text-left transition-all group"
                 >
                   <span className="text-base font-bold text-emerald-900 block group-hover:text-emerald-700">
-                    Student Portal
+                    Student Sign Up
                   </span>
                   <span className="text-xs text-emerald-700/80 mt-1 block">
-                    Scan lecture QR, check 75% rule & view history
+                    Register a new student account to scan lecture QR codes
                   </span>
                 </button>
               </div>
 
               <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
                 <button
-                  onClick={() => setIsAuthModalOpen(true)}
+                  onClick={() => openAuthModal('login')}
                   className="text-blue-600 hover:text-blue-700 font-semibold"
                 >
-                  Custom Login / Register
+                  Open Account Portal
                 </button>
                 <button
                   onClick={() => setCurrentTab('viva')}
                   className="text-slate-500 hover:text-slate-800"
                 >
-                  View Viva Prep & Docs
+                  View Viva Prep &amp; Docs
                 </button>
               </div>
             </div>
@@ -147,63 +169,51 @@ function MainApp() {
               <>
                 {user.role === 'teacher' || user.role === 'admin' ? (
                   <TeacherDashboard
+                    key={`teacher-${user.id}-${refreshKey}`}
                     onStartSession={() => setIsCreateSessionOpen(true)}
                     onViewReports={() => setCurrentTab('reports')}
                   />
                 ) : (
-                  <StudentDashboard onScanQR={() => setIsScannerOpen(true)} />
+                  <StudentDashboard
+                    key={`student-${user.id}-${refreshKey}`}
+                    onScanQR={() => setIsScannerOpen(true)}
+                  />
                 )}
               </>
             )}
 
             {currentTab === 'reports' && (
-              <ReportsView />
-            )}
-
-            {currentTab === 'viva' && (
-              <VivaDocumentationModal />
+              <ReportsView key={`reports-${refreshKey}`} />
             )}
           </div>
         )}
       </main>
 
-      {/* Floating Demo Persona Switcher (Convenient bottom dock for college demo) */}
+      {/* Bottom Status & Quick Navigation Footer */}
       <footer className="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-slate-200 py-2.5 px-4 z-30">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-700 hidden sm:inline">Demo Switcher:</span>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                onClick={() => quickDemoLogin('teacher@college.edu')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                  user?.email === 'teacher@college.edu'
-                    ? 'bg-blue-600 text-white shadow-2xs'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                }`}
-              >
-                Teacher (Prof. Rajesh)
-              </button>
-              <button
-                onClick={() => quickDemoLogin('student1@college.edu')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                  user?.email === 'student1@college.edu'
-                    ? 'bg-emerald-600 text-white shadow-2xs'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                }`}
-              >
-                Student 1 (Aarav)
-              </button>
-              <button
-                onClick={() => quickDemoLogin('student2@college.edu')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                  user?.email === 'student2@college.edu'
-                    ? 'bg-emerald-600 text-white shadow-2xs'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                }`}
-              >
-                Student 2 (Diya)
-              </button>
-            </div>
+            {user ? (
+              <span className="text-slate-600">
+                Signed in as <strong className="text-slate-900">{user.name}</strong>{' '}
+                <span className="capitalize text-slate-500">({user.role})</span>
+              </span>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => openAuthModal('login')}
+                  className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+                >
+                  Sign In
+                </button>
+                <button
+                  onClick={() => openAuthModal('register')}
+                  className="px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                >
+                  Register Student
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -211,7 +221,7 @@ function MainApp() {
               onClick={() => setCurrentTab('viva')}
               className="text-xs font-medium text-blue-600 hover:text-blue-700 underline"
             >
-              Viva & ERD Guide
+              Viva &amp; ERD Guide
             </button>
             {user && (
               <button
@@ -230,7 +240,7 @@ function MainApp() {
         isOpen={isCreateSessionOpen}
         onClose={() => setIsCreateSessionOpen(false)}
         onSessionCreated={() => {
-          // Stay in modal to view QR or close
+          setRefreshKey(prev => prev + 1);
         }}
       />
 
@@ -244,13 +254,15 @@ function MainApp() {
         initialSessionId={deepLinkSessionId}
         initialToken={deepLinkToken}
         onAttendanceMarked={() => {
-          // Success callback
+          setRefreshKey(prev => prev + 1);
         }}
       />
 
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
+        onDatabaseReset={() => setRefreshKey(prev => prev + 1)}
+        initialTab={authModalTab}
       />
     </div>
   );

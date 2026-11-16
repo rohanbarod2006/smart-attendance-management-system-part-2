@@ -37,6 +37,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   } | null>(null);
 
   const [timeRemaining, setTimeRemaining] = useState<string>('');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const fetchStats = async () => {
     try {
@@ -96,16 +97,31 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   }, [selectedActiveSessionId]);
 
   const handleCloseSession = async (sessionId: number) => {
+    setActionError(null);
     try {
       await api.closeSession(sessionId);
       fetchStats();
     } catch (err: any) {
-      alert(err.message || 'Failed to close session');
+      setActionError(err.message || 'Failed to close session');
     }
   };
 
   return (
     <div className="space-y-6">
+      {actionError && (
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button
+            onClick={() => setActionError(null)}
+            className="text-red-600 hover:text-red-800 font-semibold"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Top Banner / Actions Strip */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
         <div>

@@ -1,33 +1,66 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { api } from '../services/api.ts';
-import { LogIn, UserPlus, RefreshCw, AlertCircle, Shield, GraduationCap, CheckCircle } from 'lucide-react';
+import { RefreshCw, AlertCircle, GraduationCap, CheckCircle, X, ShieldCheck, LogOut } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose?: () => void;
+  onDatabaseReset?: () => void;
+  initialTab?: 'login' | 'register';
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
-  const { login, register, quickDemoLogin } = useAuth();
-  const [tab, setTab] = useState<'login' | 'register'>('login');
+export const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  onDatabaseReset,
+  initialTab = 'login',
+}) => {
+  const {
+    login,
+    register,
+    completeStudentProfile,
+    logout,
+    authError,
+    missingProfileEmail,
+    clearAuthError,
+  } = useAuth();
 
-  // Form states
-  const [email, setEmail] = useState<string>('teacher@college.edu');
-  const [password, setPassword] = useState<string>('password123');
+  const [tab, setTab] = useState<'login' | 'register'>(initialTab);
+
+  // Form states (no hardcoded demo credentials)
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [name, setName] = useState<string>('');
-  const [role, setRole] = useState<'teacher' | 'student'>('student');
   const [rollNumber, setRollNumber] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setTab(initialTab);
+      setError(null);
+      clearAuthError();
+    }
+  }, [isOpen, initialTab]);
 
   if (!isOpen) return null;
+
+  const displayError = error || authError;
+
+  const handleTabChange = (nextTab: 'login' | 'register') => {
+    setTab(nextTab);
+    setError(null);
+    clearAuthError();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
+    clearAuthError();
 
     try {
       if (tab === 'login') {
@@ -37,9 +70,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           name,
           email,
           password,
-          role,
-          rollNumber: role === 'student' ? rollNumber : undefined,
-          classIds: role === 'student' ? [1] : [],
+          rollNumber,
         });
       }
       if (onClose) onClose();
@@ -50,30 +81,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  const handleDemoSwitch = async (demoEmail: string) => {
+  const handleCompleteProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setError(null);
+    clearAuthError();
+
+    try {
+      await completeStudentProfile({ name, rollNumber });
+      if (onClose) onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to complete student profile');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRecoverySignOut = async () => {
     setIsSubmitting(true);
     setError(null);
     try {
-      await quickDemoLogin(demoEmail);
-      if (onClose) onClose();
+      await logout();
     } catch (err: any) {
-      setError(err.message || 'Demo login failed');
+      setError(err.message || 'Failed to sign out');
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleResetDb = async () => {
-    if (!confirm('Reset database to clean initial state? Past session data will be restored to default demo records.')) {
+    if (!confirmingReset) {
+      setConfirmingReset(true);
       return;
     }
+    setConfirmingReset(false);
     setIsSubmitting(true);
     try {
       await api.resetDemoDatabase();
-      setResetMessage('Database successfully reset to clean demo state!');
+      setResetMessage('Local attendance demo data reset to 23 lectures!');
+      if (onDatabaseReset) onDatabaseReset();
       setTimeout(() => setResetMessage(null), 3000);
     } catch (err: any) {
-      setError(err.message || 'Failed to reset database');
+      setError(err.message || 'Failed to reset demo data');
     } finally {
       setIsSubmitting(false);
     }
@@ -81,233 +130,242 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md border border-slate-200 overflow-hidden relative">
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close modal"
+            className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-md transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+
         {/* Header */}
         <div className="px-6 pt-6 pb-4 text-center border-b border-slate-100">
           <div className="w-12 h-12 bg-blue-600 text-white rounded-xl flex items-center justify-center mx-auto mb-2 shadow-xs">
             <GraduationCap className="w-6 h-6" />
           </div>
           <h2 className="text-lg font-bold text-slate-900">Smart Attendance Portal</h2>
-          <p className="text-xs text-slate-500">Sign in to record or manage college attendance</p>
+          <p className="text-xs text-slate-500">
+            {missingProfileEmail
+              ? 'Complete your Firestore user profile to continue'
+              : 'Sign in with your Firebase account or register as a student'}
+          </p>
+        </div>
 
-          {/* Quick Demo Selector */}
-          <div className="mt-4 p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl text-left">
-            <span className="text-[11px] font-bold text-blue-900 block mb-1.5 flex items-center gap-1">
-              <Shield className="w-3 h-3 text-blue-600" />
-              1-Click Demo Login (for College Viva):
-            </span>
-            <div className="grid grid-cols-2 gap-1.5 text-xs">
-              <button
-                type="button"
-                onClick={() => handleDemoSwitch('teacher@college.edu')}
-                className="px-2.5 py-1.5 bg-white hover:bg-blue-100 border border-blue-200 rounded-md font-semibold text-blue-800 text-left truncate transition-colors"
-                title="Prof. Rajesh Sharma (Teacher)"
-              >
-                👨‍🏫 Prof. Rajesh (Faculty)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDemoSwitch('student1@college.edu')}
-                className="px-2.5 py-1.5 bg-white hover:bg-emerald-100 border border-emerald-200 rounded-md font-semibold text-emerald-800 text-left truncate transition-colors"
-                title="Aarav Patel (Student, SE-IT-101)"
-              >
-                🎓 Aarav (Student)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDemoSwitch('student2@college.edu')}
-                className="px-2.5 py-1.5 bg-white hover:bg-emerald-100 border border-emerald-200 rounded-md font-semibold text-emerald-800 text-left truncate transition-colors"
-                title="Diya Sharma (Student, SE-IT-102)"
-              >
-                🎓 Diya (Student)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDemoSwitch('admin@college.edu')}
-                className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-md font-semibold text-slate-700 text-left truncate transition-colors"
-                title="College Administrator"
-              >
-                🛡️ Admin Account
-              </button>
+        {missingProfileEmail ? (
+          /* Safe Recovery View when Auth succeeded but Firestore profile is missing */
+          <div className="p-6 space-y-4">
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+              <div>
+                <p className="font-semibold">Profile missing for {missingProfileEmail}</p>
+                <p className="mt-1 text-amber-800">
+                  Your authentication succeeded, but no Firestore profile exists yet. Students can complete their student profile below. Faculty/Admin accounts must have their profile provisioned by an administrator.
+                </p>
+              </div>
             </div>
 
-            {/* Quick 60-Student Selector */}
-            <div className="mt-2.5 pt-2 border-t border-blue-200/50">
-              <label className="block text-[10px] font-bold text-blue-900 mb-1">
-                Or Select from all 60 Enrolled Students:
-              </label>
-              <select
-                onChange={(e) => {
-                  if (e.target.value) {
-                    handleDemoSwitch(e.target.value);
-                  }
-                }}
-                defaultValue=""
-                className="w-full px-2.5 py-1.5 text-xs bg-white border border-blue-300 rounded-md text-slate-800 font-medium focus:outline-none focus:ring-1 focus:ring-blue-500"
+            {displayError && (
+              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{displayError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleCompleteProfile} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  required
+                  placeholder="e.g. Aarav Patel"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">College Roll Number</label>
+                <input
+                  type="text"
+                  value={rollNumber}
+                  onChange={e => setRollNumber(e.target.value)}
+                  placeholder="e.g. SE-IT-106"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs disabled:opacity-50"
               >
-                <option value="" disabled>-- Choose from 60 Students (Roll 101 to 160) --</option>
-                {Array.from({ length: 60 }).map((_, i) => {
-                  const num = i + 1;
-                  const roll = `SE-IT-${100 + num}`;
-                  const email = `student${num}@college.edu`;
-                  return (
-                    <option key={num} value={email}>
-                      Student #{num} ({roll}) - {email}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
+                {isSubmitting ? 'Saving Profile...' : 'Complete Student Profile'}
+              </button>
+            </form>
+
+            <button
+              type="button"
+              onClick={handleRecoverySignOut}
+              disabled={isSubmitting}
+              className="w-full py-2 px-4 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out & Use Another Account</span>
+            </button>
           </div>
-        </div>
-
-        {/* Tab switch */}
-        <div className="flex border-b border-slate-200 text-xs font-semibold">
-          <button
-            type="button"
-            onClick={() => setTab('login')}
-            className={`flex-1 py-3 text-center border-b-2 transition-colors ${
-              tab === 'login'
-                ? 'border-blue-600 text-blue-600 bg-blue-50/20'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            Sign In with Email
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('register')}
-            className={`flex-1 py-3 text-center border-b-2 transition-colors ${
-              tab === 'register'
-                ? 'border-blue-600 text-blue-600 bg-blue-50/20'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            Create Account
-          </button>
-        </div>
-
-        {/* Form Body */}
-        <div className="p-6">
-          {error && (
-            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+        ) : (
+          <>
+            {/* Tab switch */}
+            <div className="flex border-b border-slate-200 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => handleTabChange('login')}
+                className={`flex-1 py-3 text-center border-b-2 transition-colors ${
+                  tab === 'login'
+                    ? 'border-blue-600 text-blue-600 bg-blue-50/20'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Sign In with Email
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTabChange('register')}
+                className={`flex-1 py-3 text-center border-b-2 transition-colors ${
+                  tab === 'register'
+                    ? 'border-blue-600 text-blue-600 bg-blue-50/20'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Student Registration
+              </button>
             </div>
-          )}
 
-          {resetMessage && (
-            <div className="mb-4 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2">
-              <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{resetMessage}</span>
-            </div>
-          )}
+            {/* Form Body */}
+            <div className="p-6">
+              {displayError && (
+                <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{displayError}</span>
+                </div>
+              )}
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            {tab === 'register' && (
-              <>
+              {resetMessage && (
+                <div className="mb-4 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2">
+                  <CheckCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{resetMessage}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleSubmit} className="space-y-3">
+                {tab === 'register' && (
+                  <>
+                    <div className="p-2.5 rounded-lg bg-blue-50/70 border border-blue-200/80 text-[11px] text-blue-900 flex items-start gap-2">
+                      <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                      <span>
+                        Public registration creates a <strong>Student</strong> account. Faculty and admin accounts are provisioned separately by an administrator.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">Full Name</label>
+                      <input
+                        type="text"
+                        value={name}
+                        onChange={e => setName(e.target.value)}
+                        required
+                        placeholder="e.g. Aarav Patel"
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">College Roll Number</label>
+                      <input
+                        type="text"
+                        value={rollNumber}
+                        onChange={e => setRollNumber(e.target.value)}
+                        placeholder="e.g. SE-IT-106"
+                        className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                      />
+                    </div>
+                  </>
+                )}
+
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Full Name</label>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Email Address</label>
                   <input
-                    type="text"
-                    value={name}
-                    onChange={e => setName(e.target.value)}
+                    type="email"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
                     required
-                    placeholder="e.g. John Doe"
+                    placeholder="name@college.edu"
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Account Role</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setRole('student')}
-                      className={`py-1.5 px-3 text-xs font-semibold rounded-lg border transition-colors ${
-                        role === 'student'
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      Student
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRole('teacher')}
-                      className={`py-1.5 px-3 text-xs font-semibold rounded-lg border transition-colors ${
-                        role === 'teacher'
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      Teacher / Faculty
-                    </button>
-                  </div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Password</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                    minLength={tab === 'register' ? 6 : undefined}
+                    placeholder="••••••••"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
                 </div>
 
-                {role === 'student' && (
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">College Roll Number</label>
-                    <input
-                      type="text"
-                      value={rollNumber}
-                      onChange={e => setRollNumber(e.target.value)}
-                      placeholder="e.g. SE-IT-106"
-                      className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-                    />
-                  </div>
-                )}
-              </>
-            )}
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs disabled:opacity-50 mt-2"
+                >
+                  {isSubmitting
+                    ? 'Processing...'
+                    : tab === 'login'
+                    ? 'Sign In'
+                    : 'Create Student Account'}
+                </button>
+              </form>
 
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">Email Address</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-                placeholder="name@college.edu"
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              {/* Reset Local Attendance Data Action (pending Firestore attendance migration in Phases 3-5) */}
+              <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                <span>{confirmingReset ? 'Reset local sample lectures & logs?' : 'Reset local attendance data?'}</span>
+                <div className="flex items-center gap-2">
+                  {confirmingReset && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingReset(false)}
+                      className="text-slate-500 hover:text-slate-700 font-medium"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleResetDb}
+                    disabled={isSubmitting}
+                    className={`font-medium flex items-center gap-1 transition-colors ${
+                      confirmingReset
+                        ? 'text-red-600 hover:text-red-700 font-semibold'
+                        : 'text-slate-600 hover:text-red-600'
+                    }`}
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>{confirmingReset ? 'Confirm Reset' : 'Reset Local Data'}</span>
+                  </button>
+                </div>
+              </div>
             </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                placeholder="••••••••"
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-xs disabled:opacity-50 mt-2"
-            >
-              {isSubmitting ? 'Processing...' : tab === 'login' ? 'Sign In' : 'Create Account'}
-            </button>
-          </form>
-
-          {/* Reset Demo Database Action */}
-          <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-            <span>Reset test data?</span>
-            <button
-              type="button"
-              onClick={handleResetDb}
-              disabled={isSubmitting}
-              className="text-slate-600 hover:text-red-600 font-medium flex items-center gap-1 transition-colors"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>Reset SQLite Database</span>
-            </button>
-          </div>
-        </div>
+          </>
+        )}
       </div>
     </div>
   );

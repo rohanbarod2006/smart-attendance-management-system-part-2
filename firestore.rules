@@ -1,0 +1,74 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'role', 'created_at'])
+        && data.keys().hasOnly(['id', 'name', 'email', 'role', 'roll_number', 'created_at'])
+        && data.id is string
+        && data.id == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 120
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 160
+        && request.auth.token.email is string
+        && data.email.lower() == request.auth.token.email.lower()
+        && data.role is string
+        && data.role in ['student', 'teacher', 'admin']
+        && (!('roll_number' in data) || data.roll_number == null || (data.roll_number is string && data.roll_number.size() <= 50))
+        && data.created_at is string
+        && data.created_at.size() >= 10
+        && data.created_at.size() <= 40;
+    }
+
+    match /users/{userId} {
+      // Unauthenticated users cannot read or write user profiles.
+      // Signed-in users can read only their own profile; listing all users is blocked.
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      // Public client-side registration may create only the caller's own profile with role == 'student'.
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().role == 'student';
+
+      // Users may update only their display name or roll number; role, id, email, and created_at are immutable.
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().id == existing().id
+        && incoming().role == existing().role
+        && incoming().email == existing().email
+        && incoming().created_at == existing().created_at
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'roll_number']);
+
+      allow delete: if false;
+    }
+  }
+}

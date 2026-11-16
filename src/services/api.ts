@@ -105,8 +105,18 @@ export const SEED_23_LECTURES = [
   { id: 23, subjectId: 3, classId: 1, daysAgo: 0, hour: 10, teacherId: 1 },
 ];
 
+export interface LocalDbUser {
+  id: number;
+  name: string;
+  email: string;
+  password_hash: string;
+  role: 'teacher' | 'student' | 'admin';
+  roll_number?: string | null;
+  created_at?: string;
+}
+
 export interface ClientDatabase {
-  users: Array<User & { password_hash: string }>;
+  users: LocalDbUser[];
   classes: CollegeClass[];
   subjects: Subject[];
   studentClasses: Array<{ student_id: number; class_id: number }>;
@@ -118,7 +128,7 @@ function createInitialDatabase(): ClientDatabase {
   const now = new Date().toISOString();
 
   // Users: 2 Teachers, 1 Admin, 60 Students
-  const users: Array<User & { password_hash: string }> = [
+  const users: LocalDbUser[] = [
     {
       id: 1,
       name: 'Prof. Rajesh Sharma',
@@ -289,121 +299,12 @@ function saveDatabase(db: ClientDatabase): void {
   localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(db));
 }
 
-export function getAuthToken(): string | null {
+function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
-export function setAuthToken(token: string): void {
-  localStorage.setItem(AUTH_TOKEN_KEY, token);
-}
-
-export function removeAuthToken(): void {
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-}
-
-// Client-Side API implementation
+// Client-Side API implementation (non-auth attendance/dashboard data pending Phases 3-5 migration)
 export const api = {
-  // 1. Auth: Login
-  login: async (credentials: { email: string; password: string }) => {
-    const db = getDatabase();
-    const cleanEmail = credentials.email.trim().toLowerCase();
-    const user = db.users.find(u => u.email.toLowerCase() === cleanEmail);
-
-    if (!user || user.password_hash !== credentials.password) {
-      throw new Error('Invalid email or password');
-    }
-
-    const token = `usr_${user.id}_${Date.now()}`;
-    setAuthToken(token);
-
-    const safeUser: User = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      roll_number: user.roll_number,
-      created_at: user.created_at,
-    };
-
-    return { token, user: safeUser };
-  },
-
-  // 2. Auth: Register
-  register: async (payload: { name: string; email: string; password: string; role: 'teacher' | 'student'; rollNumber?: string; classIds?: number[] }) => {
-    const db = getDatabase();
-    const cleanEmail = payload.email.trim().toLowerCase();
-
-    if (db.users.some(u => u.email.toLowerCase() === cleanEmail)) {
-      throw new Error('An account with this email already exists');
-    }
-
-    const newId = Math.max(...db.users.map(u => u.id), 0) + 1;
-    const now = new Date().toISOString();
-
-    const newUser = {
-      id: newId,
-      name: payload.name.trim(),
-      email: cleanEmail,
-      password_hash: payload.password,
-      role: payload.role,
-      roll_number: payload.role === 'student' ? (payload.rollNumber?.trim() || `SE-IT-${100 + newId}`) : null,
-      created_at: now,
-    };
-
-    db.users.push(newUser);
-
-    if (payload.role === 'student') {
-      const cids = payload.classIds && payload.classIds.length > 0 ? payload.classIds : [1];
-      cids.forEach(cid => {
-        db.studentClasses.push({ student_id: newId, class_id: cid });
-      });
-    }
-
-    saveDatabase(db);
-
-    const token = `usr_${newId}_${Date.now()}`;
-    setAuthToken(token);
-
-    return {
-      token,
-      user: {
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        role: newUser.role,
-        roll_number: newUser.roll_number,
-      },
-    };
-  },
-
-  // 3. Auth: Current User Profile
-  getCurrentUser: async () => {
-    const token = getAuthToken();
-    if (!token) throw new Error('Not authenticated');
-
-    const match = token.match(/^usr_(\d+)_/);
-    const userId = match ? Number(match[1]) : null;
-    if (!userId) throw new Error('Invalid token');
-
-    const db = getDatabase();
-    const user = db.users.find(u => u.id === userId);
-    if (!user) throw new Error('User not found');
-
-    const enrolledClassIds = db.studentClasses.filter(sc => sc.student_id === userId).map(sc => sc.class_id);
-    const enrolledClasses = db.classes.filter(c => enrolledClassIds.includes(c.id));
-
-    return {
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        roll_number: user.roll_number,
-        created_at: user.created_at,
-      },
-      enrolledClasses,
-    };
-  },
 
   // 4. Reset Demo Database
   resetDemoDatabase: async () => {
@@ -723,8 +624,17 @@ export const api = {
       .sort((a, b) => new Date(b.marked_at).getTime() - new Date(a.marked_at).getTime())
       .slice(0, 15);
 
+    const safeProfile: User = {
+      id: String(student.id),
+      name: student.name,
+      email: student.email,
+      role: student.role,
+      roll_number: student.roll_number,
+      created_at: student.created_at,
+    };
+
     return {
-      profile: student,
+      profile: safeProfile,
       classes,
       subjectPercentages,
       overallPercentage,

@@ -79,10 +79,10 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 onClick={onOpenDemoSwitcher}
                 className="hidden md:flex items-center gap-1 px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors whitespace-nowrap"
-                title="Switch demo account"
+                title={user ? 'Account portal' : 'Sign in or register'}
               >
                 <RefreshCw className="w-3 h-3 text-slate-500" />
-                Demo Switcher
+                {user ? 'Account' : 'Sign In'}
               </button>
             )}
           </nav>
